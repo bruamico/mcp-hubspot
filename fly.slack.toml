@@ -29,7 +29,6 @@ kill_timeout = "10s"
 [[mounts]]
   source = "tropical_bot_data"
   destination = "/app/data"
-  auto_extend_size_threshold = 80
 
 [[services]]
   internal_port = 8080
