@@ -127,19 +127,35 @@ async def _fetch_unanswered(client_key: str) -> str:
         return f"(erro unanswered check: {exc})"
 
 
+async def _fetch_memories(client_key: str) -> str:
+    try:
+        from ..models.database import recall_memories
+        rows = await recall_memories(client_key=client_key, limit=15)
+        if not rows:
+            return "Nenhuma memória salva para este cliente."
+        parts = []
+        for r in rows:
+            date = r.get("created_at", "")[:10]
+            parts.append(f"• [{date} | {r['topic']}] {r['content']}")
+        return "\n".join(parts)
+    except Exception as exc:
+        return f"(erro memória: {exc})"
+
+
 # ---------------------------------------------------------------------------
 # Per-client parallel fetch
 # ---------------------------------------------------------------------------
 
 async def fetch_client_data(client_key: str, hours_back: int) -> dict:
     """Fetch all data sources for one client concurrently."""
-    internal, external, readai, hubspot, productive, unanswered = await asyncio.gather(
+    internal, external, readai, hubspot, productive, unanswered, memories = await asyncio.gather(
         _fetch_internal_slack(client_key, hours_back),
         _fetch_external_slack(client_key, hours_back),
         _fetch_readai(client_key, hours_back),
         _fetch_hubspot(client_key),
         _fetch_productive(client_key),
         _fetch_unanswered(client_key),
+        _fetch_memories(client_key),
         return_exceptions=True,
     )
     def _safe(v):
@@ -153,6 +169,7 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
         "hubspot": _safe(hubspot),
         "productive": _safe(productive),
         "unanswered": _safe(unanswered),
+        "memories": _safe(memories),
     }
 
 
@@ -165,6 +182,9 @@ Gere o relatório completo seguindo EXATAMENTE o formato especificado.
 
 FORMATO POR CLIENTE:
 ━━ 🏢 [NOME DO CLIENTE EM MAIÚSCULAS] ━━━━━━━━━━━━━━━━━━━
+
+🧠 *Contexto (memória)*
+• [decisões anteriores, preferências ou compromissos registrados em sessões passadas — omita se vazio]
 
 📣 *Slack — Canal interno*
 • [resumo das mensagens relevantes, ou "Sem atividade no período"]
@@ -185,7 +205,7 @@ FORMATO POR CLIENTE:
 • [compromissos firmes mencionados, com responsável quando possível]
 
 ⏳ *Pendências*
-• [itens abertos/aguardando resolução]
+• [itens abertos/aguardando resolução — inclua itens da memória não resolvidos]
 
 ⚠️ *Alertas* (omita se não houver)
 • [mensagens sem resposta, itens críticos]
@@ -197,6 +217,7 @@ FORMATO POR CLIENTE:
 
 Regras:
 - Nunca invente informações — use apenas o que está nos dados fornecidos
+- A seção 🧠 Contexto deve usar APENAS a [MEMÓRIA PERSISTENTE] — não invente histórico
 - Seja conciso mas completo
 - Se uma seção não tem dados, escreva "Sem atividade no período" — nunca omita a seção
 - Separe cada cliente claramente
@@ -236,6 +257,9 @@ async def generate_report(
         key = data["key"]
         context_parts.append(f"""
 === DADOS BRUTOS: {key.upper()} ===
+
+[MEMÓRIA PERSISTENTE - decisões e contexto de sessões anteriores]
+{data['memories'][:600]}
 
 [SLACK INTERNO - #{key}]
 {data['internal_slack'][:1500]}

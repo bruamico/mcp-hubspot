@@ -70,6 +70,19 @@ async def init_db() -> None:
                 created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_key  TEXT NOT NULL DEFAULT '',
+                topic       TEXT NOT NULL DEFAULT 'geral',
+                content     TEXT NOT NULL,
+                source      TEXT DEFAULT 'agent',
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_client ON memories(client_key)"
+        )
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
 
@@ -228,3 +241,82 @@ async def search_meetings(query: str, limit: int = 5) -> list[dict]:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Memory (lightweight mempalace-style persistent memory)
+# ---------------------------------------------------------------------------
+
+async def save_memory(
+    client_key: str,
+    topic: str,
+    content: str,
+    source: str = "agent",
+) -> int:
+    """Save a memory entry. Returns the new row id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO memories (client_key, topic, content, source) VALUES (?, ?, ?, ?)",
+            (client_key.lower().strip(), topic.lower().strip(), content.strip(), source),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def recall_memories(
+    client_key: str = "",
+    topic: str | None = None,
+    query: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Retrieve memories filtered by client, topic and/or query text.
+    Empty client_key returns global (team-level) memories.
+    """
+    conditions = ["client_key = ?"]
+    params: list = [client_key.lower().strip()]
+
+    if topic:
+        conditions.append("topic = ?")
+        params.append(topic.lower().strip())
+
+    if query:
+        conditions.append("content LIKE ?")
+        params.append(f"%{query}%")
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""
+            SELECT id, client_key, topic, content, source, created_at
+            FROM memories
+            WHERE {where}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def list_memory_topics(client_key: str = "") -> list[str]:
+    """Return distinct topics stored for a client (or globally)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT DISTINCT topic FROM memories WHERE client_key = ? ORDER BY topic",
+            (client_key.lower().strip(),),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
+
+
+async def delete_memory(memory_id: int) -> bool:
+    """Delete a memory by id. Returns True if it existed."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        await db.commit()
+        return cursor.rowcount > 0
