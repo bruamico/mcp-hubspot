@@ -32,6 +32,45 @@ ALL_TOOL_DEFINITIONS = (
     + SLACK_TOOL_DEFINITIONS
 )
 
+# Tools needed for report generation — excludes write/admin tools to save tokens
+_REPORT_TOOL_NAMES = {
+    # HubSpot — read only
+    "hubspot_search_company_by_name",
+    "hubspot_get_company_timeline",
+    "hubspot_get_active_companies",
+    "hubspot_get_active_contacts",
+    # Slack — internal + external reading
+    "slack_list_clients",
+    "slack_read_tropical_channel",
+    "slack_list_client_channels",
+    "slack_read_client_channel",
+    "slack_get_client_overview",
+    "slack_check_unanswered",
+    # Meetings
+    "readai_get_recent_meetings",
+    "readai_search_meetings",
+    "granola_list_notes",
+    "granola_search_notes",
+    # Productive — overview only
+    "productive_list_projects",
+    "productive_list_time_entries",
+    "productive_list_tasks",
+}
+
+_REPORT_KEYWORDS = {
+    "relatório", "relatorio", "report", "resumo", "panorama",
+    "overview", "hoje", "semana", "clientes", "cliente",
+    "pendências", "pendencias", "acionáveis", "acionaveis",
+}
+
+
+def _select_tools(user_message: str) -> list:
+    """Return a subset of tools relevant to the request to reduce input token usage."""
+    words = set(user_message.lower().split())
+    if words & _REPORT_KEYWORDS:
+        return [t for t in ALL_TOOL_DEFINITIONS if t["name"] in _REPORT_TOOL_NAMES]
+    return ALL_TOOL_DEFINITIONS
+
 _client: anthropic.AsyncAnthropic | None = None
 
 
@@ -111,6 +150,9 @@ async def run_agent(
         {"role": "user", "content": user_message}
     ]
 
+    tools = _select_tools(user_message)
+    logger.debug("Using %d/%d tools for this request", len(tools), len(ALL_TOOL_DEFINITIONS))
+
     for iteration in range(MAX_ITERATIONS):
         logger.debug("Agent iteration %d/%d", iteration + 1, MAX_ITERATIONS)
 
@@ -119,7 +161,7 @@ async def run_agent(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=system_prompt,
-            tools=ALL_TOOL_DEFINITIONS,
+            tools=tools,
             messages=messages,
         )
 
