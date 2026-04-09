@@ -1,0 +1,126 @@
+"""
+Proactive scheduler using APScheduler.
+Runs background jobs that post alerts to Slack without user interaction.
+"""
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+logger = logging.getLogger(__name__)
+
+# Configurable via env
+REPORT_CHANNEL = os.getenv("SLACK_REPORT_CHANNEL", "#geral")
+SAO_PAULO_TZ = "America/Sao_Paulo"
+
+# Injected at startup
+_slack_client = None
+_hubspot = None
+_db_was_alert_sent = None
+_db_mark_alert_sent = None
+
+
+def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_sent_fn) -> AsyncIOScheduler:
+    """
+    Configure and return the scheduler.
+    Call this once at app startup, then call scheduler.start().
+    """
+    global _slack_client, _hubspot, _db_was_alert_sent, _db_mark_alert_sent
+    _slack_client = slack_client
+    _hubspot = hubspot_client
+    _db_was_alert_sent = was_alert_sent_fn
+    _db_mark_alert_sent = mark_alert_sent_fn
+
+    scheduler = AsyncIOScheduler(timezone=SAO_PAULO_TZ)
+
+    # Daily HubSpot summary — 9:00 AM São Paulo
+    scheduler.add_job(
+        _daily_hubspot_summary,
+        CronTrigger(hour=9, minute=0, timezone=SAO_PAULO_TZ),
+        id="daily_summary",
+        replace_existing=True,
+    )
+
+    # Deal follow-up check — every 4 hours
+    scheduler.add_job(
+        _check_deals_without_followup,
+        CronTrigger(hour="8,12,16,20", minute=0, timezone=SAO_PAULO_TZ),
+        id="deal_followup",
+        replace_existing=True,
+    )
+
+    logger.info("Scheduler configured with %d jobs", len(scheduler.get_jobs()))
+    return scheduler
+
+
+async def _daily_hubspot_summary() -> None:
+    """Post a morning briefing with active contacts, companies and open tickets."""
+    if not _slack_client or not _hubspot:
+        return
+    try:
+        contacts_raw = _hubspot.get_recent_contacts(limit=5)
+        companies_raw = _hubspot.get_recent_companies(limit=5)
+
+        now_br = datetime.now(tz=timezone(timedelta(hours=-3)))
+        date_str = now_br.strftime("%d/%m/%Y")
+
+        message = (
+            f":sunrise: *Bom dia! Resumo HubSpot — {date_str}*\n\n"
+            f"*Contatos recentes:*\n```{contacts_raw[:800]}```\n"
+            f"*Empresas recentes:*\n```{companies_raw[:800]}```\n\n"
+            f"_Para mais detalhes, me pergunte no canal!_"
+        )
+
+        await _slack_client.chat_postMessage(channel=REPORT_CHANNEL, text=message)
+        logger.info("Daily summary posted to %s", REPORT_CHANNEL)
+    except Exception as exc:
+        logger.error("Daily summary failed: %s", exc)
+
+
+async def _check_deals_without_followup() -> None:
+    """
+    Check for contacts/companies with no recent activity and alert the team.
+    Uses a dedup key so the same alert is not spammed every 4 hours.
+    """
+    if not _slack_client or not _hubspot or not _db_was_alert_sent:
+        return
+    try:
+        # Pull recent tickets with default criteria (open / recently modified)
+        result = _hubspot.get_tickets(criteria="default", limit=20)
+        tickets = result.get("results", []) if isinstance(result, dict) else []
+
+        stale = []
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=3)
+
+        for ticket in tickets:
+            props = ticket.get("properties", {})
+            last_modified = props.get("hs_lastmodifieddate", "")
+            ticket_name = props.get("subject") or props.get("hs_ticket_id", "?")
+            if last_modified:
+                try:
+                    mod_dt = datetime.fromisoformat(
+                        last_modified.replace("Z", "+00:00")
+                    )
+                    if mod_dt < cutoff:
+                        stale.append(ticket_name)
+                except ValueError:
+                    pass
+
+        if not stale:
+            return
+
+        alert_key = f"stale_tickets_{datetime.now(tz=timezone.utc).strftime('%Y-%m-%d')}"
+        if await _db_was_alert_sent(alert_key):
+            return
+
+        message = (
+            f":warning: *Tickets sem atualização há mais de 3 dias ({len(stale)}):*\n"
+            + "\n".join(f"• {t}" for t in stale[:10])
+        )
+        await _slack_client.chat_postMessage(channel=REPORT_CHANNEL, text=message)
+        await _db_mark_alert_sent(alert_key, REPORT_CHANNEL, message)
+        logger.info("Stale tickets alert posted (%d tickets)", len(stale))
+    except Exception as exc:
+        logger.error("Deal follow-up check failed: %s", exc)

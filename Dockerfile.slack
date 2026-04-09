@@ -1,0 +1,31 @@
+# Dockerfile for the Slack Agent
+# Build: docker build -f Dockerfile.slack -t tropical-slack-agent .
+# Fly.io deploy: fly deploy --config fly.slack.toml
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the mcp-server-hubspot package first (provides HubSpotClient)
+COPY pyproject.toml ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir -e ".[slack]" || pip install --no-cache-dir -e .
+
+# Install Slack agent deps
+COPY requirements-slack.txt ./
+RUN pip install --no-cache-dir -r requirements-slack.txt
+
+# Copy agent code
+COPY slack_agent/ ./slack_agent/
+
+# Data directory for SQLite volume mount
+RUN mkdir -p /app/data
+
+EXPOSE 8080
+
+CMD ["python", "-m", "slack_agent.app"]

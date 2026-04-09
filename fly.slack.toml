@@ -1,0 +1,61 @@
+# Fly.io config for the Slack Agent
+# Deploy: fly deploy --config fly.slack.toml
+#
+# Secrets to set (fly secrets set KEY=value):
+#   TROPICAL_BOT_TOKEN
+#   TROPICAL_APP_TOKEN
+#   ANTHROPIC_API_KEY
+#   HUBSPOT_ACCESS_TOKEN
+#   REDIS_URL
+#   READAI_WEBHOOK_SECRET
+#   SLACK_REPORT_CHANNEL (optional, default: #geral)
+
+app = "tropical-slack-agent"
+primary_region = "gru"         # São Paulo
+kill_signal = "SIGINT"
+kill_timeout = "10s"
+
+[build]
+  dockerfile = "Dockerfile.slack"
+
+[env]
+  PORT_WEBHOOK = "8080"
+  DB_PATH = "/app/data/tropical_bot.db"
+  CLAUDE_MODEL = "claude-sonnet-4-6"
+  AGENT_MAX_TOKENS = "4096"
+  AGENT_MAX_ITERATIONS = "10"
+  CONVERSATION_TTL_SECONDS = "86400"
+
+[[mounts]]
+  source = "tropical_bot_data"
+  destination = "/app/data"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false       # Keep alive for proactive scheduler
+  min_machines_running = 1         # Always at least 1 machine running
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 80
+
+[checks]
+  [checks.health]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    port = 8080
+    timeout = "5s"
+    type = "http"

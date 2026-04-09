@@ -1,0 +1,27 @@
+# Slack Agent dependencies
+# Install with: pip install -r requirements-slack.txt
+# The mcp-server-hubspot package (this repo) must also be installed:
+#   pip install -e .
+
+# Slack
+slack-bolt>=1.18.0
+aiohttp>=3.9.0
+
+# Claude / Anthropic
+anthropic>=0.40.0
+
+# Memory
+redis[asyncio]>=5.0.0
+
+# Database
+aiosqlite>=0.20.0
+
+# Scheduler
+APScheduler>=3.10.0
+tzdata>=2024.1
+
+# HubSpot (already in pyproject.toml but listed for standalone installs)
+hubspot-api-client>=11.1.0
+
+# Env
+python-dotenv>=1.0.1
