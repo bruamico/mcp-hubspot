@@ -177,50 +177,35 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
 # Report synthesis (single Claude call)
 # ---------------------------------------------------------------------------
 
-_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Abaixo estão os dados brutos coletados para cada cliente.
-Gere o relatório completo seguindo EXATAMENTE o formato especificado.
+_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Analise os dados brutos abaixo e gere um relatório conciso por cliente.
 
 FORMATO POR CLIENTE:
-━━ 🏢 [NOME DO CLIENTE EM MAIÚSCULAS] ━━━━━━━━━━━━━━━━━━━
+━━ 🏢 [NOME DO CLIENTE] ━━━━━━━━━━━━━━━━━━━
 
-🧠 *Contexto (memória)*
-• [decisões anteriores, preferências ou compromissos registrados em sessões passadas — omita se vazio]
+💬 *Comunicação*
+[2-4 linhas consolidando Slack interno + externo + reuniões. Foque no conteúdo — o que foi discutido, decidido ou combinado. Omita horários de espera e contagens de mensagens. Se não houver nada relevante: "Sem atividade no período."]
 
-📣 *Slack — Canal interno*
-• [resumo das mensagens relevantes, ou "Sem atividade no período"]
+📋 *CRM & Projetos*
+[1-3 linhas com destaques de HubSpot + Productive. Só o que mudou ou é relevante — engajamentos recentes, projetos ativos, tarefas vencidas. Se vazio: "Sem novidades."]
 
-💬 *Slack — Workspace do cliente*
-• [resumo das mensagens do workspace externo, ou "Sem atividade no período"]
+✅ *Para fazer*
+• [acionável 1 — com dono se conhecido]
+• [acionável 2…]
+[Se nenhum: "Nenhum acionável identificado."]
 
-📞 *Reuniões (Read.ai)*
-• [reuniões encontradas com data, participantes e pontos principais, ou "Nenhuma reunião no período"]
-
-📋 *Timeline HubSpot*
-• [engajamentos relevantes: emails, calls, notas, ou "Sem engajamentos no período"]
-
-📊 *Productive*
-• [overview rápido de projetos/budget, ou "Sem dados"]
-
-✅ *Acionáveis*
-• [compromissos firmes mencionados, com responsável quando possível]
-
-⏳ *Pendências*
-• [itens abertos/aguardando resolução — inclua itens da memória não resolvidos]
-
-⚠️ *Alertas* (omita se não houver)
-• [mensagens sem resposta, itens críticos]
-
-💡 *Sugestão*
-• [1 sugestão objetiva baseada nos dados]
+⚠️ *Atenção* (omita a seção inteira se não houver)
+• [apenas alertas genuinamente críticos: cliente sem resposta por mais de 24h, prazo vencido, conflito. NÃO inclua esperas de minutos ou horas normais.]
 
 ---
 
+Contexto de memória (se houver): use os dados de [MEMÓRIA PERSISTENTE] para enriquecer a análise — decisões anteriores, preferências, compromissos abertos.
+
 Regras:
-- Nunca invente informações — use apenas o que está nos dados fornecidos
-- A seção 🧠 Contexto deve usar APENAS a [MEMÓRIA PERSISTENTE] — não invente histórico
-- Seja conciso mas completo
-- Se uma seção não tem dados, escreva "Sem atividade no período" — nunca omita a seção
-- Separe cada cliente claramente
+- Seja direto: prefira frases curtas a listas longas
+- Nunca invente — use só o que está nos dados
+- Não repita a mesma informação em seções diferentes
+- Clientes sem nenhuma atividade: escreva apenas "Sem atividade no período." e siga para o próximo
+- Separe clientes com uma linha em branco
 """
 
 

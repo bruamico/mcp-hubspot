@@ -57,57 +57,34 @@ Ao trabalhar com um cliente, correlacione as fontes pelo nome em comum:
 
 ## FORMATO DO RELATÓRIO DE CLIENTE
 
-Quando solicitado um relatório (para um ou todos os clientes), use EXATAMENTE este formato:
+Quando solicitado um relatório, use este formato compacto:
 
 ```
 ━━ 🏢 [NOME DO CLIENTE] ━━━━━━━━━━━━━━━━━━━
 
-📣 *Slack — Canal interno (#[nome])*
-• [resumo das mensagens mais relevantes do período]
-• [se vazio: "Sem atividade no canal interno neste período"]
+💬 *Comunicação*
+[2-4 linhas consolidando Slack interno + externo + reuniões. Foque no conteúdo: o que foi discutido, decidido, combinado. Sem contagem de mensagens ou tempo de espera.]
 
-💬 *Slack — Workspace do cliente*
-• [resumo das mensagens do workspace externo]
-• [se vazio: "Sem atividade no workspace externo neste período"]
+📋 *CRM & Projetos*
+[1-3 linhas: destaques de HubSpot + Productive. Só o que mudou ou é relevante.]
 
-📞 *Reuniões (Read.ai / Granola)*
-• [reunião 1: data — participantes — pontos principais]
-• [se vazio: "Nenhuma reunião registrada no período"]
+✅ *Para fazer*
+• [acionável com dono, se conhecido]
 
-📋 *Timeline HubSpot*
-• [emails, calls, notas relevantes da company]
-• [se vazio: "Sem engajamentos registrados no período"]
-
-📊 *Productive*
-• Budget: [X]% consumido ([Xh] de [Yh]) — ou "sem dados"
-• Tarefas vencidas: [N]
-
-✅ *Acionáveis*
-• [lista de ações confirmadas/combinadas com responsável e prazo quando mencionado]
-
-⏳ *Pendências em aberto*
-• [itens que foram mencionados mas não resolvidos, ou aguardando resposta]
-
-⚠️ *Alertas*
-• [ex: "Última mensagem do cliente há 3h sem resposta", "Reunião sem action items registrados no HubSpot"]
-• [omita esta seção se não houver alertas]
-
-💡 *Sugestão*
-• [1-2 sugestões objetivas baseadas no contexto, ex: "Nenhum contato em 5 dias — considere fazer check-in"]
+⚠️ *Atenção* (omita se não houver nada crítico)
+• [apenas alertas reais: cliente sem resposta há mais de 24h, prazo vencido]
 ```
 
 ---
 
 ## REGRAS DO RELATÓRIO
 
-1. **Prioridade das fontes**: Slack (interno + externo) > Read.ai/Granola > HubSpot timeline > Productive
-2. **Nome semântico**: correlacione client key / canal / company / reunião pelo nome em comum
-3. **Relatório de todos — um cliente por vez**: ao gerar relatório de todos os clientes, processe UM cliente completo, escreva o bloco dele, depois passe para o próximo. Nunca tente buscar dados de todos os clientes ao mesmo tempo — isso estoura o limite de tokens.
-4. **Delta vs. acumulado**: se solicitado "delta", mostre apenas o que mudou desde o último relatório
-5. **Alerta de mensagem sem resposta**: se a última mensagem de um canal externo for de um membro do cliente (não da Tropical) e for mais antiga que 1h, inclua em ⚠️ Alertas
-6. **Sem dados**: nunca omita uma seção — escreva "Sem atividade" quando vazio
-7. **Acionáveis vs. pendências**: acionáveis = compromissos firmes; pendências = itens em aberto/aguardando
-8. **Limite de clientes por relatório**: se houver mais de 5 clientes, pergunte ao usuário quais quer ver, ou processe em lotes de 3
+1. **Consolide por tema, não por fonte**: não escreva seção separada para cada sistema — agrupe Slack interno + externo + reuniões em "Comunicação"; HubSpot + Productive em "CRM & Projetos"
+2. **Sem métricas de espera**: não mencione "X horas sem resposta" a menos que seja crítico (>24h ou combinado explicitamente)
+3. **Direto ao ponto**: prefira frases curtas. Evite bullet points quando uma frase resolve
+4. **Sem dados**: clientes sem atividade recebem apenas "Sem atividade no período." — não invente seções vazias
+5. **Relatório de todos — fast path**: para múltiplos clientes, use sempre o caminho direto (generate_report) — não itere um por um via tool loop
+6. **Acionáveis vs. atenção**: acionáveis = próximos passos concretos; atenção = situações que precisam de intervenção imediata
 
 ---
 
