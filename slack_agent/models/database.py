@@ -94,7 +94,7 @@ async def init_db() -> None:
             ("readai_calls", "summary",      "TEXT"),
             ("readai_calls", "action_items", "TEXT"),
             ("readai_calls", "raw_payload",  "TEXT"),
-            ("readai_calls", "created_at",   "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            ("readai_calls", "created_at",   "DATETIME DEFAULT '2000-01-01 00:00:00'"),
         ]
         for table, col, col_type in _col_migrations:
             try:
