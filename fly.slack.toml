@@ -10,8 +10,8 @@
 #   READAI_WEBHOOK_SECRET
 #   SLACK_REPORT_CHANNEL (optional, default: #geral)
 
-app = "tropical-slack-agent"
-primary_region = "gru"         # São Paulo
+app = "tropical-bot"
+primary_region = "gru"
 kill_signal = "SIGINT"
 kill_timeout = "10s"
 
@@ -29,6 +29,7 @@ kill_timeout = "10s"
 [[mounts]]
   source = "tropical_bot_data"
   destination = "/app/data"
+  auto_extend_size_threshold = 80
 
 [[services]]
   internal_port = 8080
