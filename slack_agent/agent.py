@@ -11,6 +11,7 @@ import anthropic
 
 from .tools.hubspot_tools import HUBSPOT_TOOL_DEFINITIONS, execute_hubspot_tool
 from .tools.readai_tools import READAI_TOOL_DEFINITIONS, execute_readai_tool
+from .tools.slack_tools import SLACK_TOOL_DEFINITIONS, execute_slack_tool
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.getenv("AGENT_MAX_TOKENS", "4096"))
 MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
 
-ALL_TOOL_DEFINITIONS = HUBSPOT_TOOL_DEFINITIONS + READAI_TOOL_DEFINITIONS
+ALL_TOOL_DEFINITIONS = HUBSPOT_TOOL_DEFINITIONS + READAI_TOOL_DEFINITIONS + SLACK_TOOL_DEFINITIONS
 
 _client: anthropic.AsyncAnthropic | None = None
 
@@ -36,11 +37,14 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> str:
     """Route tool call to the correct executor."""
     hubspot_names = {t["name"] for t in HUBSPOT_TOOL_DEFINITIONS}
     readai_names = {t["name"] for t in READAI_TOOL_DEFINITIONS}
+    slack_names = {t["name"] for t in SLACK_TOOL_DEFINITIONS}
 
     if tool_name in hubspot_names:
         return await execute_hubspot_tool(tool_name, tool_input)
     elif tool_name in readai_names:
         return await execute_readai_tool(tool_name, tool_input)
+    elif tool_name in slack_names:
+        return await execute_slack_tool(tool_name, tool_input)
     else:
         return f"Ferramenta desconhecida: {tool_name}"
 
