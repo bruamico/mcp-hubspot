@@ -3,6 +3,7 @@ Claude API agent loop.
 Receives a user message + conversation history, calls Claude with tools,
 executes any requested tools, and loops until Claude produces a final answer.
 """
+import asyncio
 import logging
 import os
 from typing import Any
@@ -19,7 +20,9 @@ logger = logging.getLogger(__name__)
 
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.getenv("AGENT_MAX_TOKENS", "4096"))
-MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
+MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "15"))
+# Truncate each tool result to avoid blowing up the context window
+MAX_TOOL_RESULT_CHARS = int(os.getenv("AGENT_MAX_TOOL_RESULT_CHARS", "4000"))
 
 ALL_TOOL_DEFINITIONS = (
     GRANOLA_TOOL_DEFINITIONS
@@ -39,6 +42,12 @@ def _get_client() -> anthropic.AsyncAnthropic:
             api_key=os.getenv("ANTHROPIC_API_KEY")
         )
     return _client
+
+
+def _truncate(text: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n[... resultado truncado — {len(text)} chars total]"
 
 
 async def _execute_tool(tool_name: str, tool_input: dict) -> str:
@@ -61,6 +70,22 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> str:
         return await execute_slack_tool(tool_name, tool_input)
     else:
         return f"Ferramenta desconhecida: {tool_name}"
+
+
+async def _call_with_retry(client, **kwargs) -> Any:
+    """Call the Anthropic API with exponential backoff on rate limit errors."""
+    delays = [5, 15, 30]
+    for attempt, delay in enumerate(delays + [None]):
+        try:
+            return await client.messages.create(**kwargs)
+        except anthropic.RateLimitError as exc:
+            if delay is None:
+                raise
+            logger.warning(
+                "Rate limit hit (attempt %d/%d), retrying in %ds: %s",
+                attempt + 1, len(delays) + 1, delay, exc
+            )
+            await asyncio.sleep(delay)
 
 
 async def run_agent(
@@ -89,7 +114,8 @@ async def run_agent(
     for iteration in range(MAX_ITERATIONS):
         logger.debug("Agent iteration %d/%d", iteration + 1, MAX_ITERATIONS)
 
-        response = await client.messages.create(
+        response = await _call_with_retry(
+            client,
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=system_prompt,
@@ -116,6 +142,7 @@ async def run_agent(
 
                 logger.info("Tool call: %s %s", block.name, block.input)
                 result_text = await _execute_tool(block.name, block.input)
+                result_text = _truncate(result_text)
                 logger.debug("Tool result (%d chars): %s…", len(result_text), result_text[:200])
 
                 tool_results.append(

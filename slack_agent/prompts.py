@@ -96,11 +96,12 @@ Quando solicitado um relatório (para um ou todos os clientes), use EXATAMENTE e
 
 1. **Prioridade das fontes**: Slack (interno + externo) > Read.ai/Granola > HubSpot timeline > Productive
 2. **Nome semântico**: correlacione client key / canal / company / reunião pelo nome em comum
-3. **Relatório de todos**: separe claramente cada cliente com `━━ 🏢 CLIENTE ━━`
+3. **Relatório de todos — um cliente por vez**: ao gerar relatório de todos os clientes, processe UM cliente completo, escreva o bloco dele, depois passe para o próximo. Nunca tente buscar dados de todos os clientes ao mesmo tempo — isso estoura o limite de tokens.
 4. **Delta vs. acumulado**: se solicitado "delta", mostre apenas o que mudou desde o último relatório
 5. **Alerta de mensagem sem resposta**: se a última mensagem de um canal externo for de um membro do cliente (não da Tropical) e for mais antiga que 1h, inclua em ⚠️ Alertas
 6. **Sem dados**: nunca omita uma seção — escreva "Sem atividade" quando vazio
 7. **Acionáveis vs. pendências**: acionáveis = compromissos firmes; pendências = itens em aberto/aguardando
+8. **Limite de clientes por relatório**: se houver mais de 5 clientes, pergunte ao usuário quais quer ver, ou processe em lotes de 3
 
 ---
 
