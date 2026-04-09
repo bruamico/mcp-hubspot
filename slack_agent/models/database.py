@@ -83,6 +83,24 @@ async def init_db() -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_client ON memories(client_key)"
         )
+
+        # Migrations: safely add columns that may be missing in older DB instances.
+        # ALTER TABLE ADD COLUMN fails if the column exists — catch and ignore.
+        _col_migrations = [
+            ("readai_calls", "title",        "TEXT"),
+            ("readai_calls", "date",         "TEXT"),
+            ("readai_calls", "duration",     "INTEGER DEFAULT 0"),
+            ("readai_calls", "participants", "TEXT"),
+            ("readai_calls", "summary",      "TEXT"),
+            ("readai_calls", "action_items", "TEXT"),
+            ("readai_calls", "raw_payload",  "TEXT"),
+        ]
+        for table, col, col_type in _col_migrations:
+            try:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass  # column already exists — safe to ignore
+
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
 
