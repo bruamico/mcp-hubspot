@@ -6,19 +6,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install the mcp-server-hubspot package first (provides HubSpotClient)
-COPY pyproject.toml README.md ./
-COPY src/ ./src/
-RUN pip install --no-cache-dir -e ".[slack]" || pip install --no-cache-dir -e .
-
-# Install Slack agent deps
+# Install all dependencies (Slack agent + HubSpot client, excluding heavy ML deps)
 COPY requirements-slack.txt ./
 RUN pip install --no-cache-dir -r requirements-slack.txt
+
+# Copy only the HubSpot clients (no FAISS/embedding model needed for Slack agent)
+COPY src/ ./src/
+COPY pyproject.toml README.md ./
+RUN pip install --no-cache-dir --no-deps -e .
 
 # Copy agent code
 COPY slack_agent/ ./slack_agent/
