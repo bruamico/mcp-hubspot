@@ -65,7 +65,8 @@ _REPORT_TOOL_NAMES = {
 }
 
 _REPORT_KEYWORDS = {
-    "relatório", "relatorio", "report", "resumo", "panorama",
+    "relatório", "relatórios", "relatorio", "relatorios",
+    "report", "resumo", "resumos", "panorama",
     "overview", "hoje", "semana", "clientes", "cliente",
     "pendências", "pendencias", "acionáveis", "acionaveis",
 }

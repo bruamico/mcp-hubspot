@@ -305,7 +305,7 @@ async def generate_report(
 # ---------------------------------------------------------------------------
 
 _REPORT_RE = __import__("re").compile(
-    r"\b(relatório|relatorio|report|resumo|panorama|status)\b",
+    r"\b(relatórios?|relatorios?|report|resumo|resumos|panorama|status)\b",
     __import__("re").IGNORECASE,
 )
 _HOURS_RE = __import__("re").compile(r"(\d+)\s*h(?:oras?)?", __import__("re").IGNORECASE)
