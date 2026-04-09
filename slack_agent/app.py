@@ -29,6 +29,9 @@ from .agent import run_agent
 from .models.database import init_db, save_oauth_token
 from .prompts import SYSTEM_PROMPT
 from .services.conversation import ConversationMemory
+from .services.report_service import (
+    is_report_request, generate_report, extract_hours_back, extract_client,
+)
 from .services.webhook import handle_readai_webhook
 
 logging.basicConfig(
@@ -71,11 +74,22 @@ async def _process_message(event: dict, say, client) -> None:
     try:
         history = await memory.get_history(channel, thread_ts)
 
-        response = await run_agent(
-            user_message=user_message,
-            history=history,
-            system_prompt=SYSTEM_PROMPT,
-        )
+        if is_report_request(user_message):
+            # Fast path: pre-fetch all data in parallel, single Claude synthesis call
+            from .tools.slack_tools import _get_workspaces
+            ws = await _get_workspaces()
+            all_clients = list(ws.keys())
+            specific = extract_client(user_message, all_clients)
+            clients = [specific] if specific else all_clients
+            hours_back = extract_hours_back(user_message, default=24)
+
+            response = await generate_report(clients, hours_back=hours_back)
+        else:
+            response = await run_agent(
+                user_message=user_message,
+                history=history,
+                system_prompt=SYSTEM_PROMPT,
+            )
 
         await memory.add_message(channel, thread_ts, "user", user_message)
         await memory.add_message(channel, thread_ts, "assistant", response)
