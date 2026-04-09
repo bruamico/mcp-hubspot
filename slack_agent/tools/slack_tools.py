@@ -156,6 +156,90 @@ SLACK_TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": "slack_read_tropical_channel",
+        "description": (
+            "Lê mensagens de um canal interno da Tropical Hub (o workspace do próprio time). "
+            "Use para buscar mensagens sobre um cliente específico no canal interno correspondente, "
+            "ex: canal #galena para o cliente Galena."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {
+                    "type": "string",
+                    "description": "Nome do canal sem # (ex: 'galena', 'geral')",
+                },
+                "hours_back": {
+                    "type": "integer",
+                    "description": "Buscar mensagens das últimas N horas (padrão: 48)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Número máximo de mensagens (padrão: 50)",
+                },
+            },
+            "required": ["channel_name"],
+        },
+    },
+    {
+        "name": "slack_check_unanswered",
+        "description": (
+            "Verifica se há mensagens de clientes em workspaces externos sem resposta há mais de N minutos. "
+            "Útil para detectar clientes aguardando retorno."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "client": {
+                    "type": "string",
+                    "description": "Chave do workspace do cliente. Se omitido, verifica todos.",
+                },
+                "threshold_minutes": {
+                    "type": "integer",
+                    "description": "Tempo em minutos sem resposta para considerar pendente (padrão: 60)",
+                },
+            },
+        },
+    },
+    {
+        "name": "schedule_report",
+        "description": (
+            "Cria, lista ou remove relatórios automáticos agendados. "
+            "Exemplo: relatório de todos os clientes a cada hora no canal #geral."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "list", "delete"],
+                    "description": "'create' para criar, 'list' para listar, 'delete' para remover",
+                },
+                "client": {
+                    "type": "string",
+                    "description": "Chave do cliente (ex: 'galena'). Omita para relatório de todos.",
+                },
+                "interval_minutes": {
+                    "type": "integer",
+                    "description": "Intervalo em minutos entre relatórios (ex: 60 para de hora em hora)",
+                },
+                "hours_back": {
+                    "type": "integer",
+                    "description": "Janela de tempo do relatório em horas (padrão: 24)",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Canal Slack onde enviar (ex: 'C01234' ou '#geral')",
+                },
+                "report_id": {
+                    "type": "integer",
+                    "description": "ID do relatório agendado (obrigatório para delete)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -193,6 +277,22 @@ async def execute_slack_tool(tool_name: str, tool_input: dict) -> str:
 
         elif tool_name == "slack_manage_workspace":
             return await _manage_workspace(tool_input)
+
+        elif tool_name == "slack_read_tropical_channel":
+            return await _read_tropical_channel(
+                channel_name=tool_input["channel_name"],
+                hours_back=tool_input.get("hours_back", 48),
+                limit=tool_input.get("limit", 50),
+            )
+
+        elif tool_name == "slack_check_unanswered":
+            return await _check_unanswered(
+                client=tool_input.get("client"),
+                threshold_minutes=tool_input.get("threshold_minutes", 60),
+            )
+
+        elif tool_name == "schedule_report":
+            return await _schedule_report(tool_input)
 
         else:
             return f"Ferramenta desconhecida: {tool_name}"
@@ -380,6 +480,156 @@ async def _get_client_overview(
 
     header = f"Panorama de *{ws_name}* — últimas {hours_back}h\n{'─'*40}\n"
     return header + "\n\n".join(all_sections)
+
+
+async def _read_tropical_channel(channel_name: str, hours_back: int = 48, limit: int = 50) -> str:
+    """Read messages from an internal Tropical Hub channel using the bot token."""
+    import time
+    token = os.getenv("TROPICAL_BOT_TOKEN")
+    if not token:
+        return "TROPICAL_BOT_TOKEN não configurado."
+
+    sc = AsyncWebClient(token=token)
+    # Find channel by name
+    resp = await sc.conversations_list(types="public_channel,private_channel", limit=200, exclude_archived=True)
+    channels = resp.get("channels", [])
+    name_lower = channel_name.lstrip("#").lower()
+    ch = next((c for c in channels if c["name"].lower() == name_lower), None)
+    if not ch:
+        return f"Canal `#{channel_name}` não encontrado no workspace Tropical Hub."
+
+    oldest = str(time.time() - hours_back * 3600)
+    hist = await sc.conversations_history(channel=ch["id"], limit=limit, oldest=oldest)
+    messages = hist.get("messages", [])
+    if not messages:
+        return f"Nenhuma mensagem nas últimas {hours_back}h no canal #{channel_name}."
+
+    user_cache: dict[str, str] = {}
+
+    async def get_username(uid: str) -> str:
+        if uid not in user_cache:
+            try:
+                info = await sc.users_info(user=uid)
+                user_cache[uid] = info["user"].get("real_name") or info["user"].get("name", uid)
+            except Exception:
+                user_cache[uid] = uid
+        return user_cache[uid]
+
+    lines = []
+    for msg in reversed(messages):
+        if msg.get("subtype") or msg.get("bot_id"):
+            continue
+        uid = msg.get("user", "")
+        name = await get_username(uid) if uid else "bot"
+        text = msg.get("text", "").strip()[:400]
+        if text:
+            lines.append(f"[{_fmt_ts(msg.get('ts', ''))}] *{name}*: {text}")
+
+    return f"Canal interno *#{channel_name}* — últimas {hours_back}h:\n" + "\n".join(lines) if lines else f"Sem mensagens de usuários em #{channel_name} nesse período."
+
+
+async def _check_unanswered(client: Optional[str] = None, threshold_minutes: int = 60) -> str:
+    """Check for unanswered client messages across external workspaces."""
+    import time
+    ws = await _get_workspaces()
+    clients_to_check = {client: ws[client]} if client and client in ws else ws
+    threshold_ts = time.time() - threshold_minutes * 60
+    alerts = []
+
+    for key, entry in clients_to_check.items():
+        sc = AsyncWebClient(token=entry["token"])
+        try:
+            ch_resp = await sc.conversations_list(
+                types="public_channel,private_channel", limit=50, exclude_archived=True
+            )
+        except Exception:
+            continue
+
+        for ch in ch_resp.get("channels", []):
+            try:
+                hist = await sc.conversations_history(channel=ch["id"], limit=10)
+            except Exception:
+                continue
+            msgs = [m for m in hist.get("messages", []) if not m.get("subtype") and not m.get("bot_id")]
+            if not msgs:
+                continue
+            last = msgs[0]  # most recent
+            last_ts = float(last.get("ts", 0))
+            if last_ts < threshold_ts:
+                alerts.append(
+                    f"• *{entry.get('description', key)}* `#{ch['name']}`: "
+                    f"última mensagem há {int((time.time() - last_ts) / 60)}min sem resposta"
+                )
+
+    if not alerts:
+        return f"Nenhum cliente com mensagem sem resposta há mais de {threshold_minutes} minutos."
+    return f"⚠️ Mensagens sem resposta (>{threshold_minutes}min):\n" + "\n".join(alerts)
+
+
+async def _schedule_report(tool_input: dict) -> str:
+    """Create, list or delete scheduled reports."""
+    from ..models.database import DB_PATH
+    import aiosqlite
+
+    action = tool_input.get("action")
+
+    if action == "list":
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id, client, interval_minutes, hours_back, channel, active, last_run_at FROM scheduled_reports WHERE active=1 ORDER BY id"
+            ) as cur:
+                rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return "Nenhum relatório agendado ativo."
+        lines = []
+        for r in rows:
+            client_str = r["client"] or "todos os clientes"
+            lines.append(
+                f"• ID `{r['id']}` — *{client_str}* — a cada {r['interval_minutes']}min — "
+                f"janela {r['hours_back']}h — canal `{r['channel']}` — "
+                f"último: {(r['last_run_at'] or 'nunca')[:16]}"
+            )
+        return f"Relatórios agendados ({len(rows)}):\n" + "\n".join(lines)
+
+    elif action == "create":
+        interval = tool_input.get("interval_minutes")
+        channel = tool_input.get("channel", os.getenv("SLACK_REPORT_CHANNEL", "#geral"))
+        hours_back = tool_input.get("hours_back", 24)
+        client = tool_input.get("client")
+        if not interval:
+            return "Erro: `interval_minutes` é obrigatório para criar um relatório agendado."
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "INSERT INTO scheduled_reports (client, interval_minutes, hours_back, channel, active) VALUES (?,?,?,?,1)",
+                (client, interval, hours_back, channel),
+            )
+            await db.commit()
+            report_id = cur.lastrowid
+        client_str = client or "todos os clientes"
+        return (
+            f"Relatório agendado criado (ID `{report_id}`):\n"
+            f"• Cliente: *{client_str}*\n"
+            f"• Frequência: a cada {interval} minutos\n"
+            f"• Janela: últimas {hours_back}h\n"
+            f"• Canal: {channel}\n"
+            f"O primeiro relatório será enviado na próxima janela."
+        )
+
+    elif action == "delete":
+        report_id = tool_input.get("report_id")
+        if not report_id:
+            return "Erro: `report_id` é obrigatório para remover um relatório agendado."
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE scheduled_reports SET active=0 WHERE id=?", (report_id,)
+            )
+            await db.commit()
+        if cur.rowcount:
+            return f"Relatório agendado ID `{report_id}` removido."
+        return f"ID `{report_id}` não encontrado."
+
+    return f"Ação desconhecida: {action}"
 
 
 def _fmt_ts(ts: str) -> str:

@@ -58,6 +58,18 @@ async def init_db() -> None:
                 updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_reports (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                client           TEXT,
+                interval_minutes INTEGER NOT NULL,
+                hours_back       INTEGER DEFAULT 24,
+                channel          TEXT NOT NULL,
+                active           INTEGER DEFAULT 1,
+                last_run_at      DATETIME,
+                created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
 

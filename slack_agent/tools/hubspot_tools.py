@@ -132,6 +132,55 @@ class HubSpotDirectClient:
         )
         return json.dumps(result.to_dict(), default=str)
 
+    # ── Company search by name ────────────────────────────────────────────
+
+    def search_companies_by_name(self, name: str, limit: int = 5) -> str:
+        from hubspot.crm.companies import PublicObjectSearchRequest
+        res = self.hs.crm.companies.search_api.do_search(
+            public_object_search_request=PublicObjectSearchRequest(
+                filter_groups=[{"filters": [
+                    {"propertyName": "name", "operator": "CONTAINS_TOKEN", "value": name}
+                ]}],
+                properties=["name", "domain", "hs_lastmodifieddate"],
+                limit=limit,
+            )
+        )
+        return json.dumps({"total": res.total, "results": [c.to_dict() for c in res.results]}, default=str)
+
+    # ── Company timeline (engagements) ────────────────────────────────────
+
+    def get_company_timeline(self, company_id: str, limit: int = 20) -> str:
+        """Fetch recent engagements (emails, calls, notes, meetings) for a company."""
+        import urllib.request
+        token = os.getenv("HUBSPOT_ACCESS_TOKEN") or os.getenv("HUBSPOT_TOKEN", "")
+        url = (
+            f"https://api.hubapi.com/engagements/v1/engagements/associated/COMPANY/"
+            f"{company_id}/paged?limit={limit}&count={limit}"
+        )
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            # Simplify the response for the agent
+            results = []
+            for eng in data.get("results", []):
+                e = eng.get("engagement", {})
+                m = eng.get("metadata", {})
+                results.append({
+                    "id": e.get("id"),
+                    "type": e.get("type"),
+                    "created_at": e.get("createdAt"),
+                    "last_updated": e.get("lastUpdated"),
+                    "subject": m.get("subject") or m.get("title") or "",
+                    "body": (m.get("body") or m.get("text") or "")[:500],
+                    "status": m.get("status", ""),
+                    "duration_ms": m.get("durationMilliseconds"),
+                    "from_email": (m.get("from") or {}).get("email", ""),
+                })
+            return json.dumps({"company_id": company_id, "total": len(results), "engagements": results}, default=str)
+        except Exception as exc:
+            return json.dumps({"error": str(exc), "company_id": company_id})
+
     # ── Tickets ───────────────────────────────────────────────────────────
 
     def get_tickets(self, criteria: str = "default", limit: int = 20) -> str:
@@ -288,6 +337,33 @@ HUBSPOT_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "hubspot_search_company_by_name",
+        "description": "Busca empresas no HubSpot pelo nome. Útil para correlacionar clientes Slack com companies do CRM.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nome ou parte do nome da empresa"},
+                "limit": {"type": "integer", "description": "Número máximo de resultados (padrão: 5)"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "hubspot_get_company_timeline",
+        "description": (
+            "Retorna a timeline de engajamentos (emails, calls, notas, reuniões) de uma empresa no HubSpot. "
+            "Inclui resumos de calls do Read.ai sincronizados ao CRM."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "company_id": {"type": "string", "description": "ID da empresa no HubSpot"},
+                "limit": {"type": "integer", "description": "Número máximo de engajamentos (padrão: 20)"},
+            },
+            "required": ["company_id"],
+        },
+    },
+    {
         "name": "hubspot_create_company",
         "description": "Cria uma nova empresa no HubSpot (com verificação de duplicata).",
         "input_schema": {
@@ -400,6 +476,12 @@ async def execute_hubspot_tool(tool_name: str, tool_input: dict) -> str:
 
         elif tool_name == "hubspot_get_recent_conversations":
             return hs.get_recent_conversations(limit=int(tool_input.get("limit", 10)))
+
+        elif tool_name == "hubspot_search_company_by_name":
+            return hs.search_companies_by_name(tool_input["name"], int(tool_input.get("limit", 5)))
+
+        elif tool_name == "hubspot_get_company_timeline":
+            return hs.get_company_timeline(tool_input["company_id"], int(tool_input.get("limit", 20)))
 
         else:
             return f"Ferramenta desconhecida: {tool_name}"

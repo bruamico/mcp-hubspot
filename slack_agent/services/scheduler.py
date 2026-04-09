@@ -51,6 +51,15 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
         replace_existing=True,
     )
 
+    # Dynamic scheduled reports — check every minute, run those that are due
+    scheduler.add_job(
+        _run_due_scheduled_reports,
+        "interval",
+        minutes=1,
+        id="dynamic_reports",
+        replace_existing=True,
+    )
+
     logger.info("Scheduler configured with %d jobs", len(scheduler.get_jobs()))
     return scheduler
 
@@ -77,6 +86,69 @@ async def _daily_hubspot_summary() -> None:
         logger.info("Daily summary posted to %s", REPORT_CHANNEL)
     except Exception as exc:
         logger.error("Daily summary failed: %s", exc)
+
+
+async def _run_due_scheduled_reports() -> None:
+    """Check the scheduled_reports table and run any that are due."""
+    if not _slack_client:
+        return
+    try:
+        import aiosqlite
+        from ..models.database import DB_PATH
+        from ..agent import run_agent
+        from ..prompts import SYSTEM_PROMPT
+
+        now_iso = datetime.now(tz=timezone.utc).isoformat()
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT id, client, interval_minutes, hours_back, channel, last_run_at
+                   FROM scheduled_reports WHERE active=1"""
+            ) as cur:
+                reports = [dict(r) for r in await cur.fetchall()]
+
+        for report in reports:
+            last_run = report["last_run_at"]
+            interval_sec = report["interval_minutes"] * 60
+            if last_run:
+                from datetime import datetime as dt2
+                last_dt = dt2.fromisoformat(last_run.replace("Z", "+00:00"))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                elapsed = (datetime.now(tz=timezone.utc) - last_dt).total_seconds()
+                if elapsed < interval_sec:
+                    continue
+
+            # Build prompt for the report
+            client = report["client"]
+            hours_back = report["hours_back"]
+            if client:
+                prompt = f"Gere o relatório do cliente {client} das últimas {hours_back}h."
+            else:
+                prompt = f"Gere o relatório de todos os clientes das últimas {hours_back}h."
+
+            try:
+                response = await run_agent(
+                    user_message=prompt,
+                    history=[],
+                    system_prompt=SYSTEM_PROMPT,
+                )
+                await _slack_client.chat_postMessage(
+                    channel=report["channel"],
+                    text=f"📊 *Relatório automático*\n\n{response}",
+                )
+                # Update last_run_at
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute(
+                        "UPDATE scheduled_reports SET last_run_at=? WHERE id=?",
+                        (now_iso, report["id"]),
+                    )
+                    await db.commit()
+                logger.info("Scheduled report %d posted to %s", report["id"], report["channel"])
+            except Exception as exc:
+                logger.error("Scheduled report %d failed: %s", report["id"], exc)
+    except Exception as exc:
+        logger.error("_run_due_scheduled_reports failed: %s", exc)
 
 
 async def _check_deals_without_followup() -> None:
