@@ -159,11 +159,13 @@ async def main() -> None:
 
 
 def _lazy_hubspot():
-    """Return HubSpotClient lazily to avoid import at startup."""
+    """Return HubSpotDirectClient for scheduler use."""
     try:
-        from mcp_server_hubspot.hubspot_client import HubSpotClient
+        from .tools.hubspot_tools import HubSpotDirectClient
         token = os.getenv("HUBSPOT_ACCESS_TOKEN") or os.getenv("HUBSPOT_TOKEN")
-        return HubSpotClient(access_token=token)
+        if not token:
+            return None
+        return HubSpotDirectClient(access_token=token)
     except Exception as exc:
         logger.warning("HubSpot client unavailable for scheduler: %s", exc)
         return None
