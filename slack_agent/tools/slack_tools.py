@@ -1,8 +1,12 @@
 """
 Slack workspace reader tools for the Claude agent.
-Reads messages from external client workspaces using tokens from WORKSPACES_JSON.
+Reads messages from external client workspaces.
 
-WORKSPACES_JSON format (env var):
+Workspace sources (merged, DB takes precedence over env):
+  1. WORKSPACES_JSON env var (static, set in Fly.io secrets)
+  2. `workspaces` SQLite table (dynamic, managed via bot commands)
+
+WORKSPACES_JSON format:
 {
   "galena": {"token": "xoxb-...", "description": "Galena"},
   ...
@@ -15,39 +19,36 @@ from typing import Optional
 
 from slack_sdk.web.async_client import AsyncWebClient
 
+from ..models.database import add_workspace, remove_workspace, list_db_workspaces
+
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Workspace registry
-# ---------------------------------------------------------------------------
 
-_workspaces: Optional[dict] = None
-
-
-def _get_workspaces() -> dict:
-    global _workspaces
-    if _workspaces is None:
-        raw = os.getenv("WORKSPACES_JSON", "{}")
-        try:
-            _workspaces = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.error("WORKSPACES_JSON is not valid JSON")
-            _workspaces = {}
-    return _workspaces
+def _get_env_workspaces() -> dict:
+    """Return workspaces defined in WORKSPACES_JSON env var."""
+    raw = os.getenv("WORKSPACES_JSON", "{}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("WORKSPACES_JSON is not valid JSON")
+        return {}
 
 
-def _client_for(client_key: str) -> Optional[AsyncWebClient]:
-    ws = _get_workspaces()
+async def _get_workspaces() -> dict:
+    """Return merged workspace registry: env + DB (DB takes precedence)."""
+    merged = _get_env_workspaces()
+    db_rows = await list_db_workspaces()
+    for row in db_rows:
+        merged[row["key"]] = {"token": row["token"], "description": row.get("description", row["key"])}
+    return merged
+
+
+async def _client_for(client_key: str) -> Optional[AsyncWebClient]:
+    ws = await _get_workspaces()
     entry = ws.get(client_key)
     if not entry:
         return None
     return AsyncWebClient(token=entry["token"])
-
-
-def _client_list() -> list[dict]:
-    """Return list of available clients for tool descriptions."""
-    ws = _get_workspaces()
-    return [{"key": k, "description": v.get("description", k)} for k, v in ws.items()]
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +125,37 @@ SLACK_TOOL_DEFINITIONS = [
             "required": ["client"],
         },
     },
+    {
+        "name": "slack_manage_workspace",
+        "description": (
+            "Gerencia workspaces de clientes Slack: adiciona, remove ou lista workspaces "
+            "salvos no banco de dados. Use para registrar novos clientes sem precisar "
+            "alterar variáveis de ambiente."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "remove", "list"],
+                    "description": "'add' para adicionar, 'remove' para remover, 'list' para listar workspaces do banco",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Chave única do workspace, sem espaços (ex: 'novo-cliente'). Obrigatório para add e remove.",
+                },
+                "token": {
+                    "type": "string",
+                    "description": "Token Slack xoxb-... do workspace do cliente. Obrigatório para add.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Nome amigável do cliente (ex: 'Cliente Novo'). Obrigatório para add.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -134,11 +166,11 @@ SLACK_TOOL_DEFINITIONS = [
 async def execute_slack_tool(tool_name: str, tool_input: dict) -> str:
     try:
         if tool_name == "slack_list_clients":
-            clients = _client_list()
-            if not clients:
-                return "Nenhum workspace de cliente configurado (WORKSPACES_JSON vazio)."
-            lines = [f"• *{c['description']}* — chave: `{c['key']}`" for c in clients]
-            return "Workspaces disponíveis:\n" + "\n".join(lines)
+            ws = await _get_workspaces()
+            if not ws:
+                return "Nenhum workspace de cliente configurado."
+            lines = [f"• *{v.get('description', k)}* — chave: `{k}`" for k, v in ws.items()]
+            return f"Workspaces disponíveis ({len(ws)}):\n" + "\n".join(lines)
 
         elif tool_name == "slack_list_client_channels":
             return await _list_channels(tool_input["client"])
@@ -159,6 +191,9 @@ async def execute_slack_tool(tool_name: str, tool_input: dict) -> str:
                 exclude_bots=tool_input.get("exclude_bots", True),
             )
 
+        elif tool_name == "slack_manage_workspace":
+            return await _manage_workspace(tool_input)
+
         else:
             return f"Ferramenta desconhecida: {tool_name}"
 
@@ -167,8 +202,54 @@ async def execute_slack_tool(tool_name: str, tool_input: dict) -> str:
         return f"Erro ao executar {tool_name}: {exc}"
 
 
+async def _manage_workspace(tool_input: dict) -> str:
+    action = tool_input.get("action")
+
+    if action == "list":
+        db_rows = await list_db_workspaces()
+        if not db_rows:
+            return "Nenhum workspace salvo no banco de dados. Os workspaces da variável de ambiente ainda estão disponíveis."
+        lines = [
+            f"• *{r.get('description', r['key'])}* — chave: `{r['key']}` (adicionado em {r.get('created_at', '?')[:10]})"
+            for r in db_rows
+        ]
+        return f"Workspaces salvos no banco ({len(db_rows)}):\n" + "\n".join(lines)
+
+    elif action == "add":
+        key = tool_input.get("key", "").strip().lower().replace(" ", "-")
+        token = tool_input.get("token", "").strip()
+        description = tool_input.get("description", "").strip()
+
+        if not key:
+            return "Erro: `key` é obrigatório para adicionar um workspace."
+        if not token or not token.startswith("xoxb-"):
+            return "Erro: `token` deve ser um token Slack válido começando com `xoxb-`."
+        if not description:
+            return "Erro: `description` é obrigatório para adicionar um workspace."
+
+        is_new = await add_workspace(key, token, description)
+        action_word = "adicionado" if is_new else "atualizado"
+        return (
+            f"Workspace *{description}* (chave: `{key}`) {action_word} com sucesso.\n"
+            f"Use `slack_list_client_channels` com `client: \"{key}\"` para listar os canais."
+        )
+
+    elif action == "remove":
+        key = tool_input.get("key", "").strip()
+        if not key:
+            return "Erro: `key` é obrigatório para remover um workspace."
+        removed = await remove_workspace(key)
+        if removed:
+            return f"Workspace `{key}` removido do banco de dados."
+        else:
+            return f"Workspace `{key}` não encontrado no banco. Workspaces da variável de ambiente não podem ser removidos por aqui."
+
+    else:
+        return f"Ação desconhecida: `{action}`. Use 'add', 'remove' ou 'list'."
+
+
 async def _list_channels(client_key: str) -> str:
-    sc = _client_for(client_key)
+    sc = await _client_for(client_key)
     if not sc:
         return f"Cliente '{client_key}' não encontrado. Use slack_list_clients."
 
@@ -191,7 +272,7 @@ async def _read_channel(
 ) -> str:
     import time
 
-    sc = _client_for(client_key)
+    sc = await _client_for(client_key)
     if not sc:
         return f"Cliente '{client_key}' não encontrado."
 
@@ -205,7 +286,6 @@ async def _read_channel(
     if not messages:
         return f"Nenhuma mensagem nas últimas {hours_back}h no canal {channel_id}."
 
-    # Resolve user names
     user_cache: dict[str, str] = {}
 
     async def get_username(uid: str) -> str:
@@ -224,7 +304,7 @@ async def _read_channel(
         uid = msg.get("user", "")
         name = await get_username(uid) if uid else "bot"
         ts = msg.get("ts", "")
-        text = msg.get("text", "").strip()[:500]  # truncate
+        text = msg.get("text", "").strip()[:500]
         lines.append(f"[{_fmt_ts(ts)}] *{name}*: {text}")
 
     return "\n".join(lines) if lines else "Sem mensagens de usuários nesse período."
@@ -238,14 +318,13 @@ async def _get_client_overview(
 ) -> str:
     import time
 
-    sc = _client_for(client_key)
+    sc = await _client_for(client_key)
     if not sc:
         return f"Cliente '{client_key}' não encontrado."
 
-    ws_entry = _get_workspaces().get(client_key, {})
-    ws_name = ws_entry.get("description", client_key)
+    ws = await _get_workspaces()
+    ws_name = ws.get(client_key, {}).get("description", client_key)
 
-    # List channels
     ch_resp = await sc.conversations_list(
         types="public_channel,private_channel",
         limit=100,
@@ -304,7 +383,7 @@ async def _get_client_overview(
 
 
 def _fmt_ts(ts: str) -> str:
-    """Convert Slack timestamp to HH:MM."""
+    """Convert Slack timestamp to DD/MM HH:MM."""
     try:
         import datetime
         dt = datetime.datetime.fromtimestamp(float(ts))

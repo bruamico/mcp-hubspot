@@ -39,8 +39,60 @@ async def init_db() -> None:
                 sent_at     DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                key         TEXT PRIMARY KEY,
+                token       TEXT NOT NULL,
+                description TEXT,
+                active      INTEGER DEFAULT 1,
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
+
+
+async def add_workspace(key: str, token: str, description: str) -> bool:
+    """Insert or replace a workspace. Returns True if new, False if updated."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM workspaces WHERE key = ?", (key,)) as cur:
+            exists = await cur.fetchone() is not None
+        await db.execute(
+            "INSERT OR REPLACE INTO workspaces (key, token, description, active) VALUES (?, ?, ?, 1)",
+            (key, token, description),
+        )
+        await db.commit()
+        return not exists
+
+
+async def remove_workspace(key: str) -> bool:
+    """Delete a workspace. Returns True if it existed."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM workspaces WHERE key = ?", (key,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def list_db_workspaces() -> list[dict]:
+    """Return all active workspaces stored in the database."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT key, token, description, created_at FROM workspaces WHERE active = 1 ORDER BY created_at"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def get_workspace(key: str) -> dict | None:
+    """Return a single workspace by key, or None if not found."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT key, token, description FROM workspaces WHERE key = ? AND active = 1", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
 
 async def upsert_readai_call(meeting_id: str, data: dict) -> bool:
