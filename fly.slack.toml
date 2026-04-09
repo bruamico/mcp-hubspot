@@ -1,4 +1,4 @@
-# Fly.io config for the Slack Agent
+# Fly.io config for the Slack Agent — v2 (Claude agent loop)
 # Deploy: fly deploy --config fly.slack.toml
 #
 # Secrets to set (fly secrets set KEY=value):
