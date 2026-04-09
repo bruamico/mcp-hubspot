@@ -26,7 +26,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 
 from .agent import run_agent
-from .models.database import init_db
+from .models.database import init_db, save_oauth_token
 from .prompts import SYSTEM_PROMPT
 from .services.conversation import ConversationMemory
 from .services.webhook import handle_readai_webhook
@@ -117,7 +117,107 @@ async def build_webhook_app() -> web.Application:
     aio_app = web.Application()
     aio_app.router.add_post("/webhook/readai", handle_readai_webhook)
     aio_app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    aio_app.router.add_get("/oauth/granola", _granola_oauth_start)
+    aio_app.router.add_get("/oauth/granola/callback", _granola_oauth_callback)
     return aio_app
+
+
+# ---------------------------------------------------------------------------
+# Granola OAuth 2.0 + PKCE flow
+# ---------------------------------------------------------------------------
+
+import base64
+import hashlib
+import secrets as _secrets
+
+_pkce_store: dict[str, str] = {}  # state → code_verifier (in-memory, short-lived)
+
+_GRANOLA_CLIENT_ID = "client_01KNS9F4SQRJHEXA3HCH4N8VBQ"
+_GRANOLA_AUTH_URL = "https://mcp-auth.granola.ai/oauth2/authorize"
+_GRANOLA_TOKEN_URL = "https://mcp-auth.granola.ai/oauth2/token"
+_GRANOLA_REDIRECT = "https://tropical-bot.fly.dev/oauth/granola/callback"
+_GRANOLA_SCOPES = "openid email profile offline_access"
+
+
+async def _granola_oauth_start(request: web.Request) -> web.Response:
+    """Redirect user to Granola OAuth authorization page."""
+    # Generate PKCE
+    code_verifier = base64.urlsafe_b64encode(_secrets.token_bytes(32)).rstrip(b"=").decode()
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    state = _secrets.token_hex(16)
+    _pkce_store[state] = code_verifier
+
+    from urllib.parse import urlencode
+    params = urlencode({
+        "client_id": _GRANOLA_CLIENT_ID,
+        "redirect_uri": _GRANOLA_REDIRECT,
+        "response_type": "code",
+        "scope": _GRANOLA_SCOPES,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    })
+    raise web.HTTPFound(f"{_GRANOLA_AUTH_URL}?{params}")
+
+
+async def _granola_oauth_callback(request: web.Request) -> web.Response:
+    """Handle OAuth callback, exchange code for tokens, save to DB."""
+    import aiohttp as _aiohttp
+
+    code = request.rel_url.query.get("code")
+    state = request.rel_url.query.get("state")
+    error = request.rel_url.query.get("error")
+
+    if error:
+        return web.Response(
+            text=f"OAuth error: {error}",
+            content_type="text/html",
+            status=400,
+        )
+    if not code or not state or state not in _pkce_store:
+        return web.Response(text="Invalid callback parameters.", status=400)
+
+    code_verifier = _pkce_store.pop(state)
+
+    async with _aiohttp.ClientSession() as session:
+        async with session.post(_GRANOLA_TOKEN_URL, data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": _GRANOLA_REDIRECT,
+            "client_id": _GRANOLA_CLIENT_ID,
+            "code_verifier": code_verifier,
+        }) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                logger.error("Granola token exchange failed: %s", body)
+                return web.Response(text=f"Token exchange failed: {body}", status=500)
+            data = await resp.json()
+
+    await save_oauth_token(
+        service="granola",
+        access_token=data["access_token"],
+        refresh_token=data.get("refresh_token", ""),
+        expires_in=data.get("expires_in", 3600),
+        scope=data.get("scope", ""),
+    )
+    logger.info("Granola OAuth tokens saved successfully")
+
+    return web.Response(
+        content_type="text/html",
+        text="""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Granola autorizado</title>
+<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;
+height:100vh;margin:0;background:#0f0f0f;color:#fff;}
+.box{text-align:center;padding:2rem;border:1px solid #333;border-radius:12px;}
+h1{color:#4ade80;} p{color:#aaa;}</style></head>
+<body><div class="box">
+<h1>✅ Granola autorizado!</h1>
+<p>O Tropical Bot agora tem acesso às suas notas de reunião do Granola.</p>
+<p>Pode fechar esta janela e voltar ao Slack.</p>
+</div></body></html>""",
+    )
 
 
 # ---------------------------------------------------------------------------

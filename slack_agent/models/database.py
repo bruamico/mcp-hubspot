@@ -48,6 +48,16 @@ async def init_db() -> None:
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_tokens (
+                service       TEXT PRIMARY KEY,
+                access_token  TEXT,
+                refresh_token TEXT,
+                expires_at    INTEGER,
+                scope         TEXT,
+                updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
     logger.info("Database initialized at %s", DB_PATH)
 
@@ -90,6 +100,40 @@ async def get_workspace(key: str) -> dict | None:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT key, token, description FROM workspaces WHERE key = ? AND active = 1", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def save_oauth_token(
+    service: str,
+    access_token: str,
+    refresh_token: str,
+    expires_in: int,
+    scope: str = "",
+) -> None:
+    """Store or update an OAuth token pair for a service."""
+    import time
+    expires_at = int(time.time()) + expires_in
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO oauth_tokens
+                (service, access_token, refresh_token, expires_at, scope, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (service, access_token, refresh_token, expires_at, scope),
+        )
+        await db.commit()
+
+
+async def get_oauth_token(service: str) -> dict | None:
+    """Return stored OAuth tokens for a service, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT access_token, refresh_token, expires_at, scope FROM oauth_tokens WHERE service = ?",
+            (service,),
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None

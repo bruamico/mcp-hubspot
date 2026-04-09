@@ -9,6 +9,7 @@ from typing import Any
 
 import anthropic
 
+from .tools.granola_tools import GRANOLA_TOOL_DEFINITIONS, execute_granola_tool
 from .tools.hubspot_tools import HUBSPOT_TOOL_DEFINITIONS, execute_hubspot_tool
 from .tools.productive_tools import PRODUCTIVE_TOOL_DEFINITIONS, execute_productive_tool
 from .tools.readai_tools import READAI_TOOL_DEFINITIONS, execute_readai_tool
@@ -21,7 +22,8 @@ MAX_TOKENS = int(os.getenv("AGENT_MAX_TOKENS", "4096"))
 MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "10"))
 
 ALL_TOOL_DEFINITIONS = (
-    HUBSPOT_TOOL_DEFINITIONS
+    GRANOLA_TOOL_DEFINITIONS
+    + HUBSPOT_TOOL_DEFINITIONS
     + PRODUCTIVE_TOOL_DEFINITIONS
     + READAI_TOOL_DEFINITIONS
     + SLACK_TOOL_DEFINITIONS
@@ -41,12 +43,15 @@ def _get_client() -> anthropic.AsyncAnthropic:
 
 async def _execute_tool(tool_name: str, tool_input: dict) -> str:
     """Route tool call to the correct executor."""
+    granola_names = {t["name"] for t in GRANOLA_TOOL_DEFINITIONS}
     hubspot_names = {t["name"] for t in HUBSPOT_TOOL_DEFINITIONS}
     productive_names = {t["name"] for t in PRODUCTIVE_TOOL_DEFINITIONS}
     readai_names = {t["name"] for t in READAI_TOOL_DEFINITIONS}
     slack_names = {t["name"] for t in SLACK_TOOL_DEFINITIONS}
 
-    if tool_name in hubspot_names:
+    if tool_name in granola_names:
+        return await execute_granola_tool(tool_name, tool_input)
+    elif tool_name in hubspot_names:
         return await execute_hubspot_tool(tool_name, tool_input)
     elif tool_name in productive_names:
         return await execute_productive_tool(tool_name, tool_input)
