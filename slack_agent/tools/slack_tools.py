@@ -490,13 +490,16 @@ async def _read_tropical_channel(channel_name: str, hours_back: int = 48, limit:
         return "TROPICAL_BOT_TOKEN não configurado."
 
     sc = AsyncWebClient(token=token)
-    # Find channel by name
+    # Find channel by name — try exact match first, then substring match
     resp = await sc.conversations_list(types="public_channel,private_channel", limit=200, exclude_archived=True)
     channels = resp.get("channels", [])
     name_lower = channel_name.lstrip("#").lower()
     ch = next((c for c in channels if c["name"].lower() == name_lower), None)
     if not ch:
-        return f"Canal `#{channel_name}` não encontrado no workspace Tropical Hub."
+        ch = next((c for c in channels if name_lower in c["name"].lower()), None)
+    if not ch:
+        available = ", ".join(f"#{c['name']}" for c in channels[:30])
+        return f"Canal `#{channel_name}` não encontrado no workspace Tropical Hub. Canais disponíveis: {available}"
 
     oldest = str(time.time() - hours_back * 3600)
     hist = await sc.conversations_history(channel=ch["id"], limit=limit, oldest=oldest)

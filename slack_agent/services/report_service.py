@@ -93,12 +93,28 @@ async def _fetch_hubspot(client_key: str) -> str:
 
 async def _fetch_productive(client_key: str) -> str:
     try:
-        from ..tools.productive_tools import _list_projects, _list_tasks
-        projects_raw = await _list_projects(status="active", company_id=None, limit=3)
-        # Try to find matching project by name
-        if client_key.lower() not in projects_raw.lower():
-            return "Nenhum projeto Productive encontrado para esse cliente."
-        return projects_raw[:500]
+        from ..tools.productive_tools import _get, _list_projects
+
+        # Step 1: find company by name (fuzzy match)
+        data = await _get("/companies", {"page[size]": 200, "filter[archived]": "false"})
+        companies = data.get("data", [])
+        company_id = None
+        company_name = client_key
+        for c in companies:
+            name = c.get("attributes", {}).get("name", "")
+            if client_key.lower() in name.lower():
+                company_id = c["id"]
+                company_name = name
+                break
+
+        if not company_id:
+            return f"Nenhuma empresa encontrada no Productive para '{client_key}'."
+
+        # Step 2: get active projects for that company
+        projects = await _list_projects(status="active", company_id=company_id, limit=10)
+        return f"Empresa Productive: *{company_name}*\n{projects[:600]}"
+    except KeyError as exc:
+        return f"(Productive não configurado: variável de ambiente {exc} ausente)"
     except Exception as exc:
         return f"(erro Productive: {exc})"
 

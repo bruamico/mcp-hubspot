@@ -220,11 +220,11 @@ async def search_meetings(query: str, limit: int = 5) -> list[dict]:
             """
             SELECT meeting_id, title, date, participants, summary, action_items, created_at
             FROM readai_calls
-            WHERE title LIKE ? OR summary LIKE ? OR action_items LIKE ?
+            WHERE title LIKE ? OR summary LIKE ? OR action_items LIKE ? OR participants LIKE ?
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (pattern, pattern, pattern, limit),
+            (pattern, pattern, pattern, pattern, limit),
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
