@@ -1,6 +1,7 @@
 name: Deploy Slack Agent to Fly.io
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - claude/slack-agent-viktor-vENyg
