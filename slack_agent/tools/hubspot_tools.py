@@ -150,36 +150,91 @@ class HubSpotDirectClient:
     # ── Company timeline (engagements) ────────────────────────────────────
 
     def get_company_timeline(self, company_id: str, limit: int = 20) -> str:
-        """Fetch recent engagements (emails, calls, notes, meetings) for a company."""
-        import urllib.request
+        """Fetch recent engagements + CRM activities (meetings, calls) for a company."""
+        import urllib.request as _req
+        import json as _json
         token = os.getenv("HUBSPOT_ACCESS_TOKEN") or os.getenv("HUBSPOT_TOKEN", "")
-        url = (
-            f"https://api.hubapi.com/engagements/v1/engagements/associated/COMPANY/"
-            f"{company_id}/paged?limit={limit}&count={limit}"
-        )
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        results = []
+
+        def _get(url: str) -> dict:
+            r = _req.Request(url, headers=headers)
+            with _req.urlopen(r, timeout=15) as resp:
+                return _json.loads(resp.read())
+
+        def _post(url: str, body: dict) -> dict:
+            data = _json.dumps(body).encode()
+            r = _req.Request(url, data=data, headers=headers, method="POST")
+            with _req.urlopen(r, timeout=15) as resp:
+                return _json.loads(resp.read())
+
+        # 1. Old engagements API (pre-2022 emails, notes, calls)
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-            # Simplify the response for the agent
-            results = []
+            data = _get(
+                f"https://api.hubapi.com/engagements/v1/engagements/associated/COMPANY/"
+                f"{company_id}/paged?limit={limit}&count={limit}"
+            )
             for eng in data.get("results", []):
                 e = eng.get("engagement", {})
                 m = eng.get("metadata", {})
                 results.append({
-                    "id": e.get("id"),
                     "type": e.get("type"),
-                    "created_at": e.get("createdAt"),
-                    "last_updated": e.get("lastUpdated"),
+                    "date": e.get("createdAt"),
                     "subject": m.get("subject") or m.get("title") or "",
-                    "body": (m.get("body") or m.get("text") or "")[:500],
-                    "status": m.get("status", ""),
-                    "duration_ms": m.get("durationMilliseconds"),
-                    "from_email": (m.get("from") or {}).get("email", ""),
+                    "body": (m.get("body") or m.get("text") or "")[:300],
                 })
-            return json.dumps({"company_id": company_id, "total": len(results), "engagements": results}, default=str)
         except Exception as exc:
-            return json.dumps({"error": str(exc), "company_id": company_id})
+            logger.warning("Engagements v1 API: %s", exc)
+
+        # 2. New CRM meetings (v3) — covers Read.ai synced meetings and newer logged calls
+        for obj_type, props in [
+            ("meetings", ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_body", "hs_meeting_outcome"]),
+            ("calls", ["hs_call_title", "hs_call_direction", "hs_call_duration", "hs_call_body", "hs_call_status", "hs_timestamp"]),
+        ]:
+            try:
+                assoc = _get(
+                    f"https://api.hubapi.com/crm/v3/objects/companies/{company_id}"
+                    f"/associations/{obj_type}?limit=20"
+                )
+                ids = [r["id"] for r in assoc.get("results", [])[:15]]
+                if not ids:
+                    continue
+                batch = _post(
+                    f"https://api.hubapi.com/crm/v3/objects/{obj_type}/batch/read",
+                    {"inputs": [{"id": i} for i in ids], "properties": props},
+                )
+                for item in batch.get("results", []):
+                    p = item.get("properties", {})
+                    if obj_type == "meetings":
+                        results.append({
+                            "type": "MEETING",
+                            "date": p.get("hs_meeting_start_time"),
+                            "subject": p.get("hs_meeting_title") or "",
+                            "body": (p.get("hs_meeting_body") or "")[:300],
+                            "outcome": p.get("hs_meeting_outcome") or "",
+                        })
+                    else:
+                        results.append({
+                            "type": "CALL",
+                            "date": p.get("hs_timestamp"),
+                            "subject": p.get("hs_call_title") or "",
+                            "body": (p.get("hs_call_body") or "")[:300],
+                            "status": p.get("hs_call_status") or "",
+                            "duration_ms": p.get("hs_call_duration"),
+                        })
+            except Exception as exc:
+                logger.warning("CRM %s API for company %s: %s", obj_type, company_id, exc)
+
+        # Sort by date descending, most recent first
+        def _ts(r):
+            d = r.get("date") or ""
+            return str(d)
+
+        results.sort(key=_ts, reverse=True)
+        return json.dumps(
+            {"company_id": company_id, "total": len(results), "engagements": results[:limit]},
+            default=str,
+        )
 
     # ── Tickets ───────────────────────────────────────────────────────────
 
