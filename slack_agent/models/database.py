@@ -71,6 +71,13 @@ async def init_db() -> None:
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS channel_mappings (
+                client_key   TEXT PRIMARY KEY,
+                channel_name TEXT NOT NULL,
+                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 client_key  TEXT NOT NULL DEFAULT '',
@@ -339,3 +346,39 @@ async def delete_memory(memory_id: int) -> bool:
         cursor = await db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         await db.commit()
         return cursor.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Channel mappings (client_key → internal Tropical Hub channel name)
+# ---------------------------------------------------------------------------
+
+async def set_channel_mapping(client_key: str, channel_name: str) -> None:
+    """Save or update the internal channel name for a client key."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO channel_mappings (client_key, channel_name, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)""",
+            (client_key.lower().strip(), channel_name.lstrip("#").lower().strip()),
+        )
+        await db.commit()
+
+
+async def get_channel_mapping(client_key: str) -> str | None:
+    """Return the mapped channel name for a client key, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT channel_name FROM channel_mappings WHERE client_key = ?",
+            (client_key.lower().strip(),),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def list_channel_mappings() -> list[dict]:
+    """Return all stored channel mappings."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT client_key, channel_name, updated_at FROM channel_mappings ORDER BY client_key"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]

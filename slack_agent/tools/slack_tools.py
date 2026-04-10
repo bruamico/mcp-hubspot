@@ -20,7 +20,10 @@ from typing import Optional
 
 from slack_sdk.web.async_client import AsyncWebClient
 
-from ..models.database import add_workspace, remove_workspace, list_db_workspaces
+from ..models.database import (
+    add_workspace, remove_workspace, list_db_workspaces,
+    set_channel_mapping, get_channel_mapping, list_channel_mappings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +252,33 @@ SLACK_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "slack_map_channel",
+        "description": (
+            "Define ou lista o mapeamento entre chave de cliente e canal interno "
+            "da Tropical Hub. Use quando o nome do canal não coincide com a chave "
+            "do cliente (ex: cliente 'globalthings' → canal '#gt')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["set", "list"],
+                    "description": "'set' para definir mapeamento, 'list' para listar todos",
+                },
+                "client_key": {
+                    "type": "string",
+                    "description": "Chave do cliente (ex: 'globalthings'). Obrigatório para set.",
+                },
+                "channel_name": {
+                    "type": "string",
+                    "description": "Nome do canal sem # (ex: 'gt'). Obrigatório para set.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "schedule_report",
         "description": (
             "Cria, lista ou remove relatórios automáticos agendados. "
@@ -337,6 +367,9 @@ async def execute_slack_tool(tool_name: str, tool_input: dict) -> str:
                 threshold_minutes=tool_input.get("threshold_minutes", 60),
             )
 
+        elif tool_name == "slack_map_channel":
+            return await _map_channel(tool_input)
+
         elif tool_name == "schedule_report":
             return await _schedule_report(tool_input)
 
@@ -392,6 +425,24 @@ async def _manage_workspace(tool_input: dict) -> str:
 
     else:
         return f"Ação desconhecida: `{action}`. Use 'add', 'remove' ou 'list'."
+
+
+async def _map_channel(tool_input: dict) -> str:
+    action = tool_input.get("action")
+    if action == "list":
+        rows = await list_channel_mappings()
+        if not rows:
+            return "Nenhum mapeamento salvo. Use `slack_map_channel` com `action: set` para configurar."
+        lines = [f"• `{r['client_key']}` → `#{r['channel_name']}`" for r in rows]
+        return f"Mapeamentos de canais internos ({len(rows)}):\n" + "\n".join(lines)
+    elif action == "set":
+        key = tool_input.get("client_key", "").strip().lower()
+        ch = tool_input.get("channel_name", "").strip().lstrip("#").lower()
+        if not key or not ch:
+            return "Erro: `client_key` e `channel_name` são obrigatórios."
+        await set_channel_mapping(key, ch)
+        return f"Mapeamento salvo: cliente `{key}` → canal `#{ch}`.\nPróximo relatório usará este canal."
+    return f"Ação desconhecida: {action}"
 
 
 async def _list_channels(client_key: str) -> str:
@@ -533,15 +584,26 @@ async def _read_tropical_channel(channel_name: str, hours_back: int = 48, limit:
         return "TROPICAL_BOT_TOKEN não configurado."
 
     sc = AsyncWebClient(token=token)
+    # Check explicit mapping first (client_key → channel_name)
+    mapped = await get_channel_mapping(channel_name)
+    search_name = mapped if mapped else channel_name.lstrip("#").lower()
+
     # Use cached + paginated channel list (avoids redundant API calls across clients)
     channels = await _get_tropical_channels(sc)
-    name_lower = channel_name.lstrip("#").lower()
-    ch = next((c for c in channels if c["name"].lower() == name_lower), None)
-    if not ch:
-        ch = next((c for c in channels if name_lower in c["name"].lower()), None)
-    if not ch:
-        available = ", ".join(f"#{c['name']}" for c in channels[:40])
-        return f"Canal `#{channel_name}` não encontrado no workspace Tropical Hub ({len(channels)} canais verificados). Canais: {available}"
+    name_lower = search_name.lower()
+
+    # Exact match, then substring match
+    matched = [c for c in channels if c["name"].lower() == name_lower]
+    if not matched:
+        matched = [c for c in channels if name_lower in c["name"].lower()]
+    if not matched:
+        available = ", ".join(f"#{c['name']}" for c in channels[:50])
+        return (
+            f"Canal para `{channel_name}` não encontrado ({len(channels)} canais verificados). "
+            f"Use `slack_map_channel` para mapear manualmente. Canais disponíveis: {available}"
+        )
+    # Use the best match (exact preferred; among fuzzy, shortest name wins)
+    ch = matched[0] if len(matched) == 1 else min(matched, key=lambda c: len(c["name"]))
 
     oldest = str(time.time() - hours_back * 3600)
     try:
