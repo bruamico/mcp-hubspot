@@ -119,7 +119,7 @@ async def _fetch_productive(client_key: str) -> str:
         from ..tools.productive_tools import _get, _list_projects
 
         # Step 1: find company by name (fuzzy match)
-        data = await _get("/companies", {"page[size]": 200, "filter[archived]": "false"})
+        data = await _get("/companies", {"page[size]": 200})
         companies = data.get("data", [])
         company_id = None
         company_name = client_key

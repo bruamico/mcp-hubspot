@@ -502,7 +502,21 @@ async def _read_tropical_channel(channel_name: str, hours_back: int = 48, limit:
         return f"Canal `#{channel_name}` não encontrado no workspace Tropical Hub. Canais disponíveis: {available}"
 
     oldest = str(time.time() - hours_back * 3600)
-    hist = await sc.conversations_history(channel=ch["id"], limit=limit, oldest=oldest)
+    try:
+        hist = await sc.conversations_history(channel=ch["id"], limit=limit, oldest=oldest)
+    except Exception as e:
+        if "not_in_channel" in str(e):
+            # Try to join public channel automatically
+            if not ch.get("is_private"):
+                try:
+                    await sc.conversations_join(channel=ch["id"])
+                    hist = await sc.conversations_history(channel=ch["id"], limit=limit, oldest=oldest)
+                except Exception as join_err:
+                    return f"Canal `#{channel_name}` encontrado mas não acessível: {join_err}"
+            else:
+                return f"Canal `#{ch['name']}` é privado — adicione o bot manualmente ao canal para habilitar leitura."
+        else:
+            raise
     messages = hist.get("messages", [])
     if not messages:
         return f"Nenhuma mensagem nas últimas {hours_back}h no canal #{channel_name}."
