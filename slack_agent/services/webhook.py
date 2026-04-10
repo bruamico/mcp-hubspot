@@ -1,9 +1,12 @@
 """
 Read.ai webhook handler.
-Validates HMAC-SHA256 signature (key = Base64-decoded secret) and stores
-meeting summaries in SQLite.
+Validates HMAC-SHA256 signature and stores meeting summaries in SQLite.
+
+Read.ai sends the signature in one of these headers:
+  X-Readai-Signature, X-ReadAI-Signature, X-Signature
+The value may be a raw hex digest or prefixed with "sha256=".
+The signing key is the raw secret string (UTF-8), not base64-decoded.
 """
-import base64
 import hashlib
 import hmac
 import json
@@ -16,28 +19,64 @@ from ..models.database import upsert_readai_call
 
 logger = logging.getLogger(__name__)
 
-READAI_SECRET_B64 = os.getenv("READAI_WEBHOOK_SECRET", "")
+READAI_SECRET = os.getenv("READAI_WEBHOOK_SECRET", "")
+
+_SIG_HEADERS = [
+    "X-Readai-Signature",
+    "X-ReadAI-Signature",
+    "X-ReadAi-Signature",
+    "X-Signature",
+    "X-Hub-Signature-256",
+]
 
 
-def _get_hmac_key() -> bytes:
-    """Decode the Base64-encoded secret into raw bytes."""
-    return base64.b64decode(READAI_SECRET_B64)
+def _get_signature(headers) -> str:
+    """Try multiple header names to find the signature."""
+    for h in _SIG_HEADERS:
+        val = headers.get(h, "")
+        if val:
+            return val
+    return ""
 
 
 def validate_signature(raw_body: bytes, signature_header: str) -> bool:
     """Return True if the request signature matches the computed HMAC."""
-    if not READAI_SECRET_B64:
+    if not READAI_SECRET:
         logger.warning("READAI_WEBHOOK_SECRET not set — skipping validation")
         return True
-    try:
-        key = _get_hmac_key()
-        computed = hmac.new(key, raw_body, hashlib.sha256).hexdigest()
-        # Header may be prefixed with "sha256=" — strip it
-        provided = signature_header.replace("sha256=", "").strip()
-        return hmac.compare_digest(computed, provided)
-    except Exception as exc:
-        logger.error("Signature validation error: %s", exc)
+
+    # Strip common prefix
+    provided = signature_header.replace("sha256=", "").strip()
+
+    if not provided:
+        logger.warning("No signature header received — rejecting")
         return False
+
+    # Use the raw secret string as key (UTF-8 bytes)
+    key = READAI_SECRET.encode("utf-8")
+    computed_hex = hmac.new(key, raw_body, hashlib.sha256).hexdigest()
+
+    # Compare hex vs hex
+    if hmac.compare_digest(computed_hex, provided.lower()):
+        return True
+
+    # Some services send base64-encoded digest instead of hex
+    import base64
+    try:
+        computed_b64 = base64.b64encode(
+            bytes.fromhex(computed_hex)
+        ).decode("utf-8").rstrip("=")
+        provided_b64 = provided.rstrip("=")
+        if hmac.compare_digest(computed_b64, provided_b64):
+            return True
+    except Exception:
+        pass
+
+    logger.warning(
+        "Signature mismatch — computed hex: %s, provided: %s",
+        computed_hex[:16] + "...", provided[:16] + "..."
+    )
+    return False
 
 
 def _extract_meeting_data(payload: dict) -> dict:
@@ -70,9 +109,9 @@ async def handle_readai_webhook(request: web.Request) -> web.Response:
     """aiohttp request handler for POST /webhook/readai."""
     raw_body = await request.read()
 
-    sig = request.headers.get("X-ReadAI-Signature") or request.headers.get(
-        "X-Signature", ""
-    )
+    sig = _get_signature(request.headers)
+    logger.info("Read.ai webhook received — sig header: %s", sig[:20] + "..." if len(sig) > 20 else sig or "(none)")
+
     if not validate_signature(raw_body, sig):
         logger.warning("Invalid Read.ai webhook signature — rejected")
         return web.Response(status=401, text="Invalid signature")
