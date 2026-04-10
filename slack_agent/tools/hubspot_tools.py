@@ -292,6 +292,113 @@ class HubSpotDirectClient:
             default=str,
         )
 
+    # ── Contact timeline (engagements) ───────────────────────────────────
+
+    def get_contact_timeline(self, contact_id: str, limit: int = 20) -> str:
+        """Fetch meetings, calls, and notes associated with a contact."""
+        import urllib.request as _req
+        import json as _json
+        token = os.getenv("HUBSPOT_ACCESS_TOKEN") or os.getenv("HUBSPOT_TOKEN", "")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        results = []
+
+        def _get(url: str) -> dict:
+            r = _req.Request(url, headers=headers)
+            with _req.urlopen(r, timeout=15) as resp:
+                return _json.loads(resp.read())
+
+        def _post(url: str, body: dict) -> dict:
+            data = _json.dumps(body).encode()
+            r = _req.Request(url, data=data, headers=headers, method="POST")
+            with _req.urlopen(r, timeout=15) as resp:
+                return _json.loads(resp.read())
+
+        # 1. Old engagements API
+        try:
+            data = _get(
+                f"https://api.hubapi.com/engagements/v1/engagements/associated/CONTACT/"
+                f"{contact_id}/paged?limit={limit}&count={limit}"
+            )
+            for eng in data.get("results", []):
+                e = eng.get("engagement", {})
+                m = eng.get("metadata", {})
+                results.append({
+                    "type": e.get("type"),
+                    "date": e.get("createdAt"),
+                    "subject": m.get("subject") or m.get("title") or "",
+                    "body": (m.get("body") or m.get("text") or "")[:300],
+                })
+        except Exception as exc:
+            logger.warning("Engagements v1 API (contact): %s", exc)
+
+        # 2. CRM v3 meetings, calls, notes associated with the contact
+        for obj_type, props in [
+            ("meetings", [
+                "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_body",
+                "hs_meeting_outcome", "hs_internal_meeting_notes",
+            ]),
+            ("calls", [
+                "hs_call_title", "hs_call_direction", "hs_call_duration",
+                "hs_call_body", "hs_call_status", "hs_timestamp",
+            ]),
+            ("notes", [
+                "hs_note_body", "hs_timestamp", "hs_lastmodifieddate",
+            ]),
+        ]:
+            try:
+                assoc = _get(
+                    f"https://api.hubapi.com/crm/v3/objects/contacts/{contact_id}"
+                    f"/associations/{obj_type}?limit=20"
+                )
+                ids = [r["id"] for r in assoc.get("results", [])[:15]]
+                if not ids:
+                    continue
+                batch = _post(
+                    f"https://api.hubapi.com/crm/v3/objects/{obj_type}/batch/read",
+                    {"inputs": [{"id": i} for i in ids], "properties": props},
+                )
+                for item in batch.get("results", []):
+                    p = item.get("properties", {})
+                    if obj_type == "meetings":
+                        results.append({
+                            "type": "MEETING",
+                            "date": p.get("hs_meeting_start_time"),
+                            "subject": p.get("hs_meeting_title") or "",
+                            "body": (p.get("hs_meeting_body") or "")[:800],
+                            "internal_notes": (p.get("hs_internal_meeting_notes") or "")[:400],
+                            "outcome": p.get("hs_meeting_outcome") or "",
+                        })
+                    elif obj_type == "calls":
+                        results.append({
+                            "type": "CALL",
+                            "date": p.get("hs_timestamp"),
+                            "subject": p.get("hs_call_title") or "",
+                            "body": (p.get("hs_call_body") or "")[:800],
+                            "status": p.get("hs_call_status") or "",
+                            "duration_ms": p.get("hs_call_duration"),
+                        })
+                    else:  # notes
+                        note_body = (p.get("hs_note_body") or "")[:600]
+                        if note_body:
+                            results.append({
+                                "type": "NOTE",
+                                "date": p.get("hs_timestamp") or p.get("hs_lastmodifieddate"),
+                                "subject": "",
+                                "body": note_body,
+                            })
+            except Exception as exc:
+                logger.warning("CRM %s API for contact %s: %s", obj_type, contact_id, exc)
+
+        def _ts(r):
+            d = r.get("date") or ""
+            return str(d)
+
+        results.sort(key=_ts, reverse=True)
+        return json.dumps(
+            {"contact_id": contact_id, "total": len(results), "engagements": results[:limit]},
+            default=str,
+        )
+
     # ── Tickets ───────────────────────────────────────────────────────────
 
     def get_tickets(self, criteria: str = "default", limit: int = 20) -> str:
@@ -549,6 +656,22 @@ HUBSPOT_TOOL_DEFINITIONS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "hubspot_get_contact_timeline",
+        "description": (
+            "Retorna a timeline de engajamentos (reuniões, chamadas, notas) de um contato/lead no HubSpot. "
+            "Use para buscar notas e atas de reuniões relacionadas a um lead específico. "
+            "Para encontrar o contact_id, use hubspot_search_contact_by_name primeiro."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contact_id": {"type": "string", "description": "ID do contato no HubSpot"},
+                "limit": {"type": "integer", "description": "Número máximo de engajamentos (padrão: 20)"},
+            },
+            "required": ["contact_id"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -611,6 +734,9 @@ async def execute_hubspot_tool(tool_name: str, tool_input: dict) -> str:
 
         elif tool_name == "hubspot_search_contact_by_name":
             return hs.search_contacts_by_name(tool_input["name"], int(tool_input.get("limit", 5)))
+
+        elif tool_name == "hubspot_get_contact_timeline":
+            return hs.get_contact_timeline(tool_input["contact_id"], int(tool_input.get("limit", 20)))
 
         else:
             return f"Ferramenta desconhecida: {tool_name}"

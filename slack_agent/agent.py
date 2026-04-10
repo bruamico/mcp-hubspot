@@ -46,6 +46,7 @@ _REPORT_TOOL_NAMES = {
     "hubspot_get_active_companies",
     "hubspot_get_active_contacts",
     "hubspot_search_contact_by_name",
+    "hubspot_get_contact_timeline",
     # Slack — internal + external reading
     "slack_list_clients",
     "slack_read_tropical_channel",
