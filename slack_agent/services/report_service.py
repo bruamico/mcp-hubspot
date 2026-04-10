@@ -158,7 +158,8 @@ async def _fetch_hubspot(client_key: str) -> str:
 
 async def _fetch_productive(client_key: str) -> str:
     try:
-        from ..tools.productive_tools import _get, _list_projects
+        import datetime
+        from ..tools.productive_tools import _get
 
         # Step 1: find company by name (fuzzy match)
         data = await _get("/companies", {"page[size]": 200})
@@ -176,8 +177,48 @@ async def _fetch_productive(client_key: str) -> str:
             return f"Nenhuma empresa encontrada no Productive para '{client_key}'."
 
         # Step 2: get active projects for that company
-        projects = await _list_projects(status="active", company_id=company_id, limit=10)
-        return f"Empresa Productive: *{company_name}*\n{projects[:600]}"
+        proj_data = await _get("/projects", {
+            "filter[company_id]": company_id,
+            "filter[archived]": "false",
+            "page[size]": 50,
+        })
+        projects = proj_data.get("data", [])
+        if not projects:
+            return f"Productive: *{company_name}* — sem projetos ativos."
+
+        project_ids = [p["id"] for p in projects]
+        project_names = [p.get("attributes", {}).get("name", "?") for p in projects[:3]]
+
+        # Step 3: count overdue open tasks across all projects
+        today = datetime.date.today().isoformat()
+        overdue_total = 0
+        try:
+            td = await _get("/tasks", {
+                "filter[project_id]": ",".join(project_ids),
+                "filter[closed]": "false",
+                "filter[due_date_before]": today,
+                "page[size]": 1,
+            })
+            overdue_total = td.get("meta", {}).get("total_count", 0) or 0
+        except Exception:
+            # Fallback: query per project (first 5 only to avoid rate limits)
+            for pid in project_ids[:5]:
+                try:
+                    td = await _get("/tasks", {
+                        "filter[project_id]": pid,
+                        "filter[closed]": "false",
+                        "filter[due_date_before]": today,
+                        "page[size]": 1,
+                    })
+                    overdue_total += td.get("meta", {}).get("total_count", 0) or 0
+                except Exception:
+                    pass
+
+        proj_str = ", ".join(project_names)
+        if len(projects) > 3:
+            proj_str += f" +{len(projects) - 3} mais"
+        overdue_str = f"\n• {overdue_total} tarefas overdue" if overdue_total > 0 else "\n• Sem overdue"
+        return f"Productive: *{company_name}*\n• Projetos: {proj_str}{overdue_str}"
     except KeyError as exc:
         return f"⚠️ERRO Productive: variável de ambiente {exc} ausente"
     except Exception as exc:
@@ -241,50 +282,67 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
 # Report synthesis (single Claude call)
 # ---------------------------------------------------------------------------
 
-_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Analise os dados brutos abaixo e gere um relatório conciso por cliente.
+_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Gere um briefing diário no estilo abaixo — escaneável, priorizado, acionável.
 
-FORMATO POR CLIENTE:
-━━ 🏢 [NOME DO CLIENTE] ━━━━━━━━━━━━━━━━━━━
+---
 
-💬 *Comunicação*
-[2-4 linhas consolidando Slack interno + externo + reuniões. Foque no conteúdo — o que foi discutido, decidido ou combinado. Omita horários de espera e contagens de mensagens. Se não houver nada relevante: "Sem atividade no período."]
+## FORMATO DE SAÍDA
 
-📋 *CRM & Projetos*
-[1-3 linhas com destaques de HubSpot + Productive. Só o que mudou ou é relevante — engajamentos recentes, projetos ativos, tarefas vencidas. Se vazio: "Sem novidades."]
+```
+📊 *Briefing [Diário/Semanal] — [Dia, DD/MM/AAAA]*
+[N] clientes com atividade | [N] alertas
 
-✅ *Para fazer*
-• [acionável 1 — com dono se conhecido]
-• [acionável 2…]
-[Se nenhum: "Nenhum acionável identificado."]
+🔴 *ClienteX* — [1-2 linhas com a urgência + quem precisa agir + o quê]
+🟠 *ClienteY* — [1-2 linhas com deadline ou problema acumulado]
+🟡 *ClienteZ* — [1-2 linhas com atividade normal, decisão ou reunião]
+⚪ *ClienteW* — [frase única: sem atividade ou FYI]
 
-⚠️ *Atenção* (omita a seção inteira se não houver)
-• [apenas alertas genuinamente críticos: cliente sem resposta por mais de 24h, prazo vencido, conflito. NÃO inclua esperas de minutos ou horas normais.]
+📅 *Resumo Semanal — DD/MM → DD/MM* (só se hours_back ≥ 72h)
+Principais acontecimentos:
+• ...
+Para a próxima semana:
+• ...
+```
+
+---
+
+## CRITÉRIOS DE PRIORIDADE
+
+🔴 **Urgente** — cliente aguardando resposta há mais de 2h em horário comercial, bloqueio crítico, problema relatado sem retorno
+🟠 **Atenção** — deadline nos próximos 2 dias, overdue acumulado no Productive, problema recorrente, insumos pendentes do cliente
+🟡 **Normal** — reunião realizada com decisão, próximo passo claro, atividade saudável sem bloqueio
+⚪ **Baixo** — sem atividade no período, apenas FYI, situação estável
 
 ---
 
 ## COMO USAR O SLACK INTERNO TROPICAL HUB
 
-Os dados do Slack interno chegam como um dump global de TODOS os canais com atividade — não por cliente.
-Para cada cliente, você deve identificar quais canais pertencem a ele usando estas heurísticas (em ordem de prioridade):
+Os dados chegam como dump global de todos os canais. Para cada cliente, identifique o canal pelo:
+1. Nome do canal = chave do cliente (ex: `#galena` → Galena)
+2. Nome do canal contém parte da chave (ex: `#projeto-galena` → Galena)
+3. Menção explícita ao nome da empresa nas mensagens
+4. Contexto (pessoas, produtos conhecidos do cliente)
 
-1. **Nome do canal = nome/chave do cliente** — ex: canal `#galena` → cliente Galena; `#sympla` → Sympla
-2. **Nome do canal contém parte da chave** — ex: `#galena-suporte` ou `#projeto-galena` → cliente Galena
-3. **Menção explícita do nome da empresa** nas mensagens do canal
-4. **Contexto das mensagens** — referências a pessoas, produtos ou projetos conhecidos do cliente
-
-Se nenhum canal puder ser associado a um cliente com razoável confiança, omita o Slack interno da seção 💬 desse cliente — não invente.
+Se não conseguir associar com confiança, omita — não invente.
 
 ---
 
-Contexto de memória (se houver): use os dados de [MEMÓRIA PERSISTENTE] para enriquecer a análise — decisões anteriores, preferências, compromissos abertos.
+## @MENÇÕES DE RESPONSÁVEIS
 
-Regras:
-- Seja direto: prefira frases curtas a listas longas
+Quando o Slack ou Read.ai indicar quem da equipe Tropical está envolvido, mencione-o com @NomeSobrenome.
+Exemplos observados: @Felipe Castanheira, @Gabriela Oliveira, @Naty Ribeiro.
+Use memória persistente para reforçar responsáveis conhecidos por cliente.
+
+---
+
+## REGRAS
+
+- Ordene clientes do mais crítico (🔴) para o menos (⚪)
+- Máximo 2 linhas por cliente nos níveis 🔴/🟠/🟡; 1 linha para ⚪
+- Clientes sem atividade alguma: agrupe no final como ⚪ em linha única
 - Nunca invente — use só o que está nos dados
-- Não repita a mesma informação em seções diferentes
-- Clientes sem nenhuma atividade: escreva apenas "Sem atividade no período." e siga para o próximo
-- Separe clientes com uma linha em branco
-- CRÍTICO: quando uma fonte contém "⚠️ERRO", escreva literalmente `_(fonte indisponível: [motivo])_` nessa seção — NUNCA interprete erro como "sem atividade". Ausência de dados ≠ erro de sistema.
+- CRÍTICO: fonte com "⚠️ERRO" → escreva `_(fonte indisponível: motivo)_` — NUNCA interprete como "sem atividade"
+- Contexto de memória ([MEMÓRIA PERSISTENTE]): use para enriquecer com decisões anteriores, responsáveis, alertas recorrentes
 """
 
 
