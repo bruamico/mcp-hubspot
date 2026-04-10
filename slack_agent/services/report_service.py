@@ -255,12 +255,10 @@ async def _fetch_memories(client_key: str) -> str:
 
 async def fetch_client_data(client_key: str, hours_back: int) -> dict:
     """Fetch per-client data sources concurrently (internal Slack is fetched globally)."""
-    external, readai, hubspot, productive, unanswered, memories = await asyncio.gather(
+    external, readai, hubspot, memories = await asyncio.gather(
         _fetch_external_slack(client_key, hours_back),
         _fetch_readai(client_key, hours_back),
         _fetch_hubspot(client_key),
-        _fetch_productive(client_key),
-        _fetch_unanswered(client_key),
         _fetch_memories(client_key),
         return_exceptions=True,
     )
@@ -272,8 +270,6 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
         "external_slack": _safe(external),
         "readai": _safe(readai),
         "hubspot": _safe(hubspot),
-        "productive": _safe(productive),
-        "unanswered": _safe(unanswered),
         "memories": _safe(memories),
     }
 
@@ -282,67 +278,67 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
 # Report synthesis (single Claude call)
 # ---------------------------------------------------------------------------
 
-_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Gere um briefing diário no estilo abaixo — escaneável, priorizado, acionável.
+_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Gere um briefing diário focado em conversas, combinados e próximos passos — não em métricas de tempo de resposta.
 
 ---
 
 ## FORMATO DE SAÍDA
 
-```
 📊 *Briefing [Diário/Semanal] — [Dia, DD/MM/AAAA]*
-[N] clientes com atividade | [N] alertas
+[N] clientes com atividade
 
-🔴 *ClienteX* — [1-2 linhas com a urgência + quem precisa agir + o quê]
-🟠 *ClienteY* — [1-2 linhas com deadline ou problema acumulado]
-🟡 *ClienteZ* — [1-2 linhas com atividade normal, decisão ou reunião]
-⚪ *ClienteW* — [frase única: sem atividade ou FYI]
+🔴 *ClienteX* — [o que foi discutido/reportado + quem precisa agir + o quê]
+🟠 *ClienteY* — [decisão pendente, combinado a confirmar, problema relatado]
+🟡 *ClienteZ* — [reunião realizada / próximo passo claro / atividade saudável]
+⚪ *ClienteW* — Sem atividade no período.
 
 📅 *Resumo Semanal — DD/MM → DD/MM* (só se hours_back ≥ 72h)
-Principais acontecimentos:
-• ...
+• [principais acontecimentos da semana]
 Para a próxima semana:
-• ...
-```
+• [ações prioritárias]
+
+---
+
+## FONTES E O QUE EXTRAIR DE CADA UMA
+
+**Slack interno (Tropical Hub):** o que a equipe Tropical está discutindo sobre o cliente — decisões internas, alinhamentos, combinados entre membros da equipe.
+**Slack externo (workspace do cliente):** o que o cliente está comunicando — pedidos, problemas reportados, perguntas, feedbacks, decisões conjuntas.
+**Read.ai:** resumo de reuniões — o que foi decidido, action items, próximos passos.
+**HubSpot:** engajamentos recentes — emails, calls, notas — contexto de relacionamento.
+
+**NÃO use:** tempo de resposta, minutos/horas sem retorno, contagem de mensagens. Isso não é relevante aqui.
 
 ---
 
 ## CRITÉRIOS DE PRIORIDADE
 
-🔴 **Urgente** — cliente aguardando resposta há mais de 2h em horário comercial, bloqueio crítico, problema relatado sem retorno
-🟠 **Atenção** — deadline nos próximos 2 dias, overdue acumulado no Productive, problema recorrente, insumos pendentes do cliente
-🟡 **Normal** — reunião realizada com decisão, próximo passo claro, atividade saudável sem bloqueio
-⚪ **Baixo** — sem atividade no período, apenas FYI, situação estável
+🔴 Problema crítico reportado pelo cliente sem resolução visível, bloqueio de operação, erro sistêmico impactando múltiplos itens
+🟠 Combinado ou decisão pendente de confirmação, insumo que o cliente precisa enviar, prazo próximo mencionado na conversa
+🟡 Reunião realizada com decisão clara, alinhamento feito, próximo passo definido, atividade normal em andamento
+⚪ Sem atividade relevante no período
 
 ---
 
 ## COMO USAR O SLACK INTERNO TROPICAL HUB
 
-Os dados chegam como dump global de todos os canais. Para cada cliente, identifique o canal pelo:
+Dados chegam como dump global de todos os canais. Associe cada canal ao cliente pelo:
 1. Nome do canal = chave do cliente (ex: `#galena` → Galena)
-2. Nome do canal contém parte da chave (ex: `#projeto-galena` → Galena)
+2. Nome contém parte da chave (ex: `#projeto-galena` → Galena)
 3. Menção explícita ao nome da empresa nas mensagens
-4. Contexto (pessoas, produtos conhecidos do cliente)
+4. Contexto das mensagens
 
 Se não conseguir associar com confiança, omita — não invente.
 
 ---
 
-## @MENÇÕES DE RESPONSÁVEIS
-
-Quando o Slack ou Read.ai indicar quem da equipe Tropical está envolvido, mencione-o com @NomeSobrenome.
-Exemplos observados: @Felipe Castanheira, @Gabriela Oliveira, @Naty Ribeiro.
-Use memória persistente para reforçar responsáveis conhecidos por cliente.
-
----
-
 ## REGRAS
 
-- Ordene clientes do mais crítico (🔴) para o menos (⚪)
-- Máximo 2 linhas por cliente nos níveis 🔴/🟠/🟡; 1 linha para ⚪
-- Clientes sem atividade alguma: agrupe no final como ⚪ em linha única
-- Nunca invente — use só o que está nos dados
-- CRÍTICO: fonte com "⚠️ERRO" → escreva `_(fonte indisponível: motivo)_` — NUNCA interprete como "sem atividade"
-- Contexto de memória ([MEMÓRIA PERSISTENTE]): use para enriquecer com decisões anteriores, responsáveis, alertas recorrentes
+- Ordene do mais crítico (🔴) ao menos (⚪)
+- Máximo 2 linhas por cliente em 🔴/🟠/🟡; 1 linha para ⚪
+- Mencione @NomeSobrenome quando o Slack indicar quem deve agir (ex: @Felipe Castanheira, @Gabriela Oliveira)
+- Use [MEMÓRIA PERSISTENTE] para enriquecer com contexto de sessões anteriores
+- CRÍTICO: fonte com "⚠️ERRO" → escreva `_(fonte indisponível: motivo)_` — nunca interprete como "sem atividade"
+- Nunca invente — só o que está nos dados
 """
 
 
@@ -393,19 +389,13 @@ async def generate_report(
 {data['memories'][:600]}
 
 [SLACK EXTERNO - workspace {key}]
-{data['external_slack'][:1500]}
+{data['external_slack'][:2000]}
 
-[READ.AI]
-{data['readai'][:800]}
+[READ.AI - reuniões]
+{data['readai'][:1000]}
 
 [HUBSPOT TIMELINE]
-{data['hubspot'][:800]}
-
-[PRODUCTIVE]
-{data['productive'][:400]}
-
-[MENSAGENS SEM RESPOSTA]
-{data['unanswered'][:300]}
+{data['hubspot'][:600]}
 
 """)
 
