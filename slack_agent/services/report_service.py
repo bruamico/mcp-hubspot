@@ -20,17 +20,59 @@ MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 # Data fetchers (run in parallel per client)
 # ---------------------------------------------------------------------------
 
-async def _fetch_internal_slack(client_key: str, hours_back: int) -> str:
+async def _fetch_all_internal_slack(hours_back: int) -> str:
+    """
+    Scan ALL accessible Tropical Hub channels in parallel.
+    Returns a single block with every channel that had activity, labelled by
+    channel name. Claude will decide which channel belongs to which client.
+    """
+    import os as _os
+    token = _os.getenv("TROPICAL_BOT_TOKEN")
+    if not token:
+        return "⚠️ERRO: TROPICAL_BOT_TOKEN não configurado."
     try:
-        from ..tools.slack_tools import _read_tropical_channel
-        result = await _read_tropical_channel(client_key, hours_back=hours_back, limit=40)
-        # Surface channel-not-found as explicit error so Claude doesn't say "sem atividade"
-        if "não encontrado" in result and "Canais disponíveis" in result:
-            return f"⚠️ERRO: {result}"
-        return result
+        from slack_sdk.web.async_client import AsyncWebClient
+        from ..tools.slack_tools import _get_tropical_channels, _fmt_ts
+
+        sc = AsyncWebClient(token=token)
+        channels = await _get_tropical_channels(sc)
+        logger.info("Internal Slack scan: %d channels, last %dh", len(channels), hours_back)
+
+        oldest = str(time.time() - hours_back * 3600)
+        sem = asyncio.Semaphore(15)  # cap concurrent API calls
+
+        async def _read(ch: dict) -> str | None:
+            async with sem:
+                try:
+                    hist = await sc.conversations_history(
+                        channel=ch["id"], limit=12, oldest=oldest
+                    )
+                    msgs = [
+                        m for m in hist.get("messages", [])
+                        if not m.get("subtype") and not m.get("bot_id")
+                    ]
+                    if not msgs:
+                        return None
+                    lines = []
+                    for m in reversed(msgs):
+                        text = m.get("text", "").strip()[:220]
+                        if text:
+                            lines.append(f"  [{_fmt_ts(m.get('ts',''))}] {text}")
+                    return f"#{ch['name']}:\n" + "\n".join(lines) if lines else None
+                except Exception:
+                    return None
+
+        results = await asyncio.gather(*[_read(ch) for ch in channels])
+        sections = [r for r in results if r]
+
+        if not sections:
+            return "Sem atividade nos canais internos no período."
+
+        logger.info("Internal Slack: %d/%d channels with activity", len(sections), len(channels))
+        return "\n\n".join(sections)
     except Exception as exc:
-        logger.error("_fetch_internal_slack(%s): %s", client_key, exc)
-        return f"⚠️ERRO ao ler canal interno: {exc}"
+        logger.error("_fetch_all_internal_slack: %s", exc)
+        return f"⚠️ERRO Slack interno: {exc}"
 
 
 async def _fetch_external_slack(client_key: str, hours_back: int) -> str:
@@ -171,9 +213,8 @@ async def _fetch_memories(client_key: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def fetch_client_data(client_key: str, hours_back: int) -> dict:
-    """Fetch all data sources for one client concurrently."""
-    internal, external, readai, hubspot, productive, unanswered, memories = await asyncio.gather(
-        _fetch_internal_slack(client_key, hours_back),
+    """Fetch per-client data sources concurrently (internal Slack is fetched globally)."""
+    external, readai, hubspot, productive, unanswered, memories = await asyncio.gather(
         _fetch_external_slack(client_key, hours_back),
         _fetch_readai(client_key, hours_back),
         _fetch_hubspot(client_key),
@@ -187,7 +228,6 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
 
     return {
         "key": client_key,
-        "internal_slack": _safe(internal),
         "external_slack": _safe(external),
         "readai": _safe(readai),
         "hubspot": _safe(hubspot),
@@ -222,6 +262,20 @@ FORMATO POR CLIENTE:
 
 ---
 
+## COMO USAR O SLACK INTERNO TROPICAL HUB
+
+Os dados do Slack interno chegam como um dump global de TODOS os canais com atividade — não por cliente.
+Para cada cliente, você deve identificar quais canais pertencem a ele usando estas heurísticas (em ordem de prioridade):
+
+1. **Nome do canal = nome/chave do cliente** — ex: canal `#galena` → cliente Galena; `#sympla` → Sympla
+2. **Nome do canal contém parte da chave** — ex: `#galena-suporte` ou `#projeto-galena` → cliente Galena
+3. **Menção explícita do nome da empresa** nas mensagens do canal
+4. **Contexto das mensagens** — referências a pessoas, produtos ou projetos conhecidos do cliente
+
+Se nenhum canal puder ser associado a um cliente com razoável confiança, omita o Slack interno da seção 💬 desse cliente — não invente.
+
+---
+
 Contexto de memória (se houver): use os dados de [MEMÓRIA PERSISTENTE] para enriquecer a análise — decisões anteriores, preferências, compromissos abertos.
 
 Regras:
@@ -247,10 +301,15 @@ async def generate_report(
     t0 = time.time()
     logger.info("Generating report for %d clients, %dh window", len(client_keys), hours_back)
 
-    # Fetch all clients in parallel
-    client_data_list = await asyncio.gather(
+    # Fetch internal Slack ONCE for all clients (parallel channel scan)
+    # and per-client data concurrently
+    internal_slack_task = asyncio.create_task(_fetch_all_internal_slack(hours_back))
+    client_data_list_task = asyncio.gather(
         *[fetch_client_data(key, hours_back) for key in client_keys],
         return_exceptions=True,
+    )
+    internal_slack_all, client_data_list = await asyncio.gather(
+        internal_slack_task, client_data_list_task
     )
 
     # Build context for Claude
@@ -259,6 +318,10 @@ async def generate_report(
     context_parts = [
         f"Período: últimas {hours_back}h | Gerado em: {now_str}\n",
         f"Clientes analisados: {', '.join(client_keys)}\n\n",
+        f"=== SLACK INTERNO TROPICAL HUB (TODOS OS CANAIS COM ATIVIDADE) ===\n"
+        f"Use estes dados para a seção 💬 Comunicação de cada cliente — associe pelo nome do canal, "
+        f"menções de empresa, ou contexto das mensagens.\n\n"
+        f"{internal_slack_all[:6000]}\n\n",
     ]
 
     for data in client_data_list:
@@ -266,22 +329,19 @@ async def generate_report(
             continue
         key = data["key"]
         context_parts.append(f"""
-=== DADOS BRUTOS: {key.upper()} ===
+=== DADOS DO CLIENTE: {key.upper()} ===
 
-[MEMÓRIA PERSISTENTE - decisões e contexto de sessões anteriores]
+[MEMÓRIA PERSISTENTE]
 {data['memories'][:600]}
-
-[SLACK INTERNO - #{key}]
-{data['internal_slack'][:1500]}
 
 [SLACK EXTERNO - workspace {key}]
 {data['external_slack'][:1500]}
 
 [READ.AI]
-{data['readai'][:1000]}
+{data['readai'][:800]}
 
 [HUBSPOT TIMELINE]
-{data['hubspot'][:1000]}
+{data['hubspot'][:800]}
 
 [PRODUCTIVE]
 {data['productive'][:400]}
