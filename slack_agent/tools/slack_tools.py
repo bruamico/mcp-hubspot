@@ -15,6 +15,7 @@ WORKSPACES_JSON format:
 import json
 import logging
 import os
+import time as _time
 from typing import Optional
 
 from slack_sdk.web.async_client import AsyncWebClient
@@ -22,6 +23,51 @@ from slack_sdk.web.async_client import AsyncWebClient
 from ..models.database import add_workspace, remove_workspace, list_db_workspaces
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Channel list cache — avoids 12 redundant API calls per report run
+# (one per client). Invalidated after 5 minutes.
+# ---------------------------------------------------------------------------
+_tropical_channels_cache: tuple[float, list] | None = None  # (fetched_at, channels)
+_CHANNEL_CACHE_TTL = 300  # 5 minutes
+
+
+async def _get_tropical_channels(sc: AsyncWebClient) -> list[dict]:
+    """Return all non-archived channels from the Tropical Hub workspace, with cache."""
+    global _tropical_channels_cache
+    now = _time.time()
+    if _tropical_channels_cache and now - _tropical_channels_cache[0] < _CHANNEL_CACHE_TTL:
+        return _tropical_channels_cache[1]
+
+    channels = await _paginated_channels(sc)
+    _tropical_channels_cache = (now, channels)
+    logger.info("Tropical Hub channel list refreshed: %d channels", len(channels))
+    return channels
+
+
+async def _paginated_channels(
+    sc: AsyncWebClient,
+    types: str = "public_channel,private_channel",
+) -> list[dict]:
+    """Fetch ALL channels from a workspace using cursor-based pagination."""
+    all_channels: list[dict] = []
+    cursor: Optional[str] = None
+    page = 0
+    while True:
+        page += 1
+        kwargs: dict = {"types": types, "limit": 200, "exclude_archived": True}
+        if cursor:
+            kwargs["cursor"] = cursor
+        try:
+            resp = await sc.conversations_list(**kwargs)
+        except Exception as exc:
+            logger.warning("conversations_list page %d failed: %s", page, exc)
+            break
+        all_channels.extend(resp.get("channels", []))
+        cursor = resp.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+    return all_channels
 
 
 def _get_env_workspaces() -> dict:
@@ -425,12 +471,9 @@ async def _get_client_overview(
     ws = await _get_workspaces()
     ws_name = ws.get(client_key, {}).get("description", client_key)
 
-    ch_resp = await sc.conversations_list(
-        types="public_channel,private_channel",
-        limit=100,
-        exclude_archived=True,
-    )
-    channels = ch_resp.get("channels", [])
+    # Paginate through ALL channels — limit=100 would silently miss active channels
+    channels = await _paginated_channels(sc)
+    logger.info("_get_client_overview(%s): %d channels found", client_key, len(channels))
 
     oldest = str(time.time() - hours_back * 3600)
     all_sections: list[str] = []
@@ -490,16 +533,15 @@ async def _read_tropical_channel(channel_name: str, hours_back: int = 48, limit:
         return "TROPICAL_BOT_TOKEN não configurado."
 
     sc = AsyncWebClient(token=token)
-    # Find channel by name — try exact match first, then substring match
-    resp = await sc.conversations_list(types="public_channel,private_channel", limit=200, exclude_archived=True)
-    channels = resp.get("channels", [])
+    # Use cached + paginated channel list (avoids redundant API calls across clients)
+    channels = await _get_tropical_channels(sc)
     name_lower = channel_name.lstrip("#").lower()
     ch = next((c for c in channels if c["name"].lower() == name_lower), None)
     if not ch:
         ch = next((c for c in channels if name_lower in c["name"].lower()), None)
     if not ch:
-        available = ", ".join(f"#{c['name']}" for c in channels[:30])
-        return f"Canal `#{channel_name}` não encontrado no workspace Tropical Hub. Canais disponíveis: {available}"
+        available = ", ".join(f"#{c['name']}" for c in channels[:40])
+        return f"Canal `#{channel_name}` não encontrado no workspace Tropical Hub ({len(channels)} canais verificados). Canais: {available}"
 
     oldest = str(time.time() - hours_back * 3600)
     try:
