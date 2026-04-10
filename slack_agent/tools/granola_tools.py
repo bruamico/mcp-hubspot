@@ -137,27 +137,36 @@ async def _ensure_initialized(token: str) -> None:
 
 
 async def _call_granola_tool(tool_name: str, arguments: dict) -> str:
-    """Call a tool on the Granola MCP server."""
+    """Call a tool on the Granola MCP server, with one retry on session errors."""
+    global _mcp_session_id
+
     token = await _get_valid_token()
     if not token:
         return (
             "Granola não está autenticado. "
             "Acesse https://tropical-bot.fly.dev/oauth/granola no seu navegador para autorizar."
         )
-    try:
-        await _ensure_initialized(token)
-        result = await _mcp_call("tools/call", {"name": tool_name, "arguments": arguments}, token)
-        if result and "content" in result:
-            parts = [c.get("text", "") for c in result["content"] if c.get("type") == "text"]
-            return "\n".join(parts) if parts else json.dumps(result, ensure_ascii=False)
-        return json.dumps(result, ensure_ascii=False, default=str)
-    except PermissionError as exc:
-        global _mcp_session_id
-        _mcp_session_id = None  # Reset session on auth failure
-        return str(exc)
-    except Exception as exc:
-        logger.error("Granola MCP call %s failed: %s", tool_name, exc)
-        return f"Erro ao chamar Granola ({tool_name}): {exc}"
+
+    for attempt in range(2):
+        try:
+            await _ensure_initialized(token)
+            result = await _mcp_call("tools/call", {"name": tool_name, "arguments": arguments}, token)
+            if result and "content" in result:
+                parts = [c.get("text", "") for c in result["content"] if c.get("type") == "text"]
+                return "\n".join(parts) if parts else json.dumps(result, ensure_ascii=False)
+            return json.dumps(result, ensure_ascii=False, default=str)
+        except PermissionError as exc:
+            _mcp_session_id = None  # Reset session on auth failure
+            return str(exc)
+        except Exception as exc:
+            _mcp_session_id = None  # Reset stale session before retry
+            if attempt == 0:
+                logger.warning("Granola MCP call %s failed (attempt 1), retrying: %s", tool_name, exc)
+                continue
+            logger.error("Granola MCP call %s failed: %s", tool_name, exc)
+            return f"Erro ao chamar Granola ({tool_name}): {exc}"
+
+    return f"Erro ao chamar Granola ({tool_name}): falha após retry"
 
 
 # ---------------------------------------------------------------------------

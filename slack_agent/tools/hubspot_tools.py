@@ -147,6 +147,41 @@ class HubSpotDirectClient:
         )
         return json.dumps({"total": res.total, "results": [c.to_dict() for c in res.results]}, default=str)
 
+    # ── Contact search by name or email ─────────────────────────────────────
+
+    def search_contacts_by_name(self, name: str, limit: int = 5) -> str:
+        from hubspot.crm.contacts import PublicObjectSearchRequest
+        # Try by full name first, then fallback to firstname CONTAINS
+        parts = name.strip().split(" ", 1)
+        filters = []
+        if len(parts) == 2:
+            filters = [
+                {"propertyName": "firstname", "operator": "CONTAINS_TOKEN", "value": parts[0]},
+                {"propertyName": "lastname", "operator": "CONTAINS_TOKEN", "value": parts[1]},
+            ]
+        else:
+            filters = [{"propertyName": "firstname", "operator": "CONTAINS_TOKEN", "value": name}]
+        res = self.hs.crm.contacts.search_api.do_search(
+            public_object_search_request=PublicObjectSearchRequest(
+                filter_groups=[{"filters": filters}],
+                properties=["firstname", "lastname", "email", "company", "hs_lastmodifieddate", "lifecyclestage"],
+                limit=limit,
+            )
+        )
+        if res.total == 0 and len(parts) == 2:
+            # Retry with just first name
+            res2 = self.hs.crm.contacts.search_api.do_search(
+                public_object_search_request=PublicObjectSearchRequest(
+                    filter_groups=[{"filters": [
+                        {"propertyName": "firstname", "operator": "CONTAINS_TOKEN", "value": parts[0]}
+                    ]}],
+                    properties=["firstname", "lastname", "email", "company", "hs_lastmodifieddate", "lifecyclestage"],
+                    limit=limit,
+                )
+            )
+            res = res2
+        return json.dumps({"total": res.total, "results": [c.to_dict() for c in res.results]}, default=str)
+
     # ── Company timeline (engagements) ────────────────────────────────────
 
     def get_company_timeline(self, company_id: str, limit: int = 20) -> str:
@@ -186,10 +221,19 @@ class HubSpotDirectClient:
         except Exception as exc:
             logger.warning("Engagements v1 API: %s", exc)
 
-        # 2. New CRM meetings (v3) — covers Read.ai synced meetings and newer logged calls
+        # 2. New CRM objects (v3) — meetings, calls, notes
         for obj_type, props in [
-            ("meetings", ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_body", "hs_meeting_outcome"]),
-            ("calls", ["hs_call_title", "hs_call_direction", "hs_call_duration", "hs_call_body", "hs_call_status", "hs_timestamp"]),
+            ("meetings", [
+                "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_body",
+                "hs_meeting_outcome", "hs_internal_meeting_notes",
+            ]),
+            ("calls", [
+                "hs_call_title", "hs_call_direction", "hs_call_duration",
+                "hs_call_body", "hs_call_status", "hs_timestamp",
+            ]),
+            ("notes", [
+                "hs_note_body", "hs_timestamp", "hs_lastmodifieddate",
+            ]),
         ]:
             try:
                 assoc = _get(
@@ -206,22 +250,34 @@ class HubSpotDirectClient:
                 for item in batch.get("results", []):
                     p = item.get("properties", {})
                     if obj_type == "meetings":
+                        body = (p.get("hs_meeting_body") or "")[:800]
+                        internal_notes = (p.get("hs_internal_meeting_notes") or "")[:400]
                         results.append({
                             "type": "MEETING",
                             "date": p.get("hs_meeting_start_time"),
                             "subject": p.get("hs_meeting_title") or "",
-                            "body": (p.get("hs_meeting_body") or "")[:300],
+                            "body": body,
+                            "internal_notes": internal_notes,
                             "outcome": p.get("hs_meeting_outcome") or "",
                         })
-                    else:
+                    elif obj_type == "calls":
                         results.append({
                             "type": "CALL",
                             "date": p.get("hs_timestamp"),
                             "subject": p.get("hs_call_title") or "",
-                            "body": (p.get("hs_call_body") or "")[:300],
+                            "body": (p.get("hs_call_body") or "")[:800],
                             "status": p.get("hs_call_status") or "",
                             "duration_ms": p.get("hs_call_duration"),
                         })
+                    else:  # notes
+                        note_body = (p.get("hs_note_body") or "")[:600]
+                        if note_body:
+                            results.append({
+                                "type": "NOTE",
+                                "date": p.get("hs_timestamp") or p.get("hs_lastmodifieddate"),
+                                "subject": "",
+                                "body": note_body,
+                            })
             except Exception as exc:
                 logger.warning("CRM %s API for company %s: %s", obj_type, company_id, exc)
 
@@ -478,6 +534,21 @@ HUBSPOT_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": "hubspot_search_contact_by_name",
+        "description": (
+            "Busca contatos no HubSpot pelo nome (ou parte do nome). "
+            "Use para localizar um lead ou contato específico antes de buscar sua timeline."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nome completo ou parcial do contato"},
+                "limit": {"type": "integer", "description": "Número máximo de resultados (padrão: 5)"},
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -537,6 +608,9 @@ async def execute_hubspot_tool(tool_name: str, tool_input: dict) -> str:
 
         elif tool_name == "hubspot_get_company_timeline":
             return hs.get_company_timeline(tool_input["company_id"], int(tool_input.get("limit", 20)))
+
+        elif tool_name == "hubspot_search_contact_by_name":
+            return hs.search_contacts_by_name(tool_input["name"], int(tool_input.get("limit", 5)))
 
         else:
             return f"Ferramenta desconhecida: {tool_name}"
