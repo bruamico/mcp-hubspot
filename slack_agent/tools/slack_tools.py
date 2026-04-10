@@ -279,6 +279,50 @@ SLACK_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "monitor_client",
+        "description": (
+            "Cria, lista ou remove jobs de monitoramento de delta. "
+            "O monitor roda a cada N minutos, compara o estado atual dos clientes com o snapshot anterior "
+            "e posta no Slack apenas quando há mudança urgente (nova mensagem crítica, combinado pendente, etc). "
+            "Diferente do relatório agendado: só avisa quando algo muda, não repete o mesmo conteúdo."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "remove", "list"],
+                    "description": "'add' para criar, 'remove' para remover, 'list' para listar",
+                },
+                "client": {
+                    "type": "string",
+                    "description": "Chave do cliente (ex: 'galena'). Omita para monitorar todos.",
+                },
+                "interval_minutes": {
+                    "type": "integer",
+                    "description": "Intervalo em minutos entre verificações (padrão: 60)",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Canal Slack para receber alertas (ex: '#geral' ou ID do canal)",
+                },
+                "min_priority": {
+                    "type": "string",
+                    "enum": ["red", "orange", "yellow"],
+                    "description": (
+                        "Prioridade mínima para disparar alerta. "
+                        "'orange' = só 🔴🟠 (padrão), 'yellow' = qualquer mudança, 'red' = só crítico"
+                    ),
+                },
+                "job_id": {
+                    "type": "integer",
+                    "description": "ID do job (obrigatório para remove)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "schedule_report",
         "description": (
             "Cria, lista ou remove relatórios automáticos agendados. "
@@ -369,6 +413,9 @@ async def execute_slack_tool(tool_name: str, tool_input: dict) -> str:
 
         elif tool_name == "slack_map_channel":
             return await _map_channel(tool_input)
+
+        elif tool_name == "monitor_client":
+            return await _manage_monitor(tool_input)
 
         elif tool_name == "schedule_report":
             return await _schedule_report(tool_input)
@@ -691,6 +738,64 @@ async def _check_unanswered(client: Optional[str] = None, threshold_minutes: int
     if not alerts:
         return f"Nenhum cliente com mensagem sem resposta há mais de {threshold_minutes} minutos."
     return f"⚠️ Mensagens sem resposta (>{threshold_minutes}min):\n" + "\n".join(alerts)
+
+
+async def _manage_monitor(tool_input: dict) -> str:
+    """Create, list or remove delta monitoring jobs."""
+    from ..models.database import (
+        add_monitoring_job, remove_monitoring_job, list_monitoring_jobs,
+    )
+
+    action = tool_input.get("action")
+
+    if action == "list":
+        jobs = await list_monitoring_jobs()
+        if not jobs:
+            return "Nenhum job de monitoramento ativo."
+        lines = []
+        for j in jobs:
+            client_str = j["client"] or "todos os clientes"
+            last = (j.get("last_run_at") or "nunca executado")[:16]
+            priority_map = {"red": "🔴 só crítico", "orange": "🔴🟠", "yellow": "🔴🟠🟡"}
+            prio = priority_map.get(j["min_priority"], j["min_priority"])
+            lines.append(
+                f"• ID `{j['id']}` — *{client_str}* — a cada {j['interval_minutes']}min — "
+                f"canal `{j['channel']}` — alertas: {prio} — último: {last}"
+            )
+        return f"Monitoramentos ativos ({len(jobs)}):\n" + "\n".join(lines)
+
+    elif action == "add":
+        client = tool_input.get("client")
+        interval = int(tool_input.get("interval_minutes", 60))
+        channel = tool_input.get("channel", os.getenv("SLACK_REPORT_CHANNEL", "#geral"))
+        min_priority = tool_input.get("min_priority", "orange")
+
+        if interval < 5:
+            return "Erro: intervalo mínimo é 5 minutos."
+
+        job_id = await add_monitoring_job(client, interval, channel, min_priority)
+        client_str = f"*{client}*" if client else "*todos os clientes*"
+        priority_map = {"red": "só 🔴 crítico", "orange": "🔴🟠 urgente/atenção", "yellow": "🔴🟠🟡 qualquer mudança"}
+        prio_str = priority_map.get(min_priority, min_priority)
+        return (
+            f"✅ Monitoramento criado (ID `{job_id}`):\n"
+            f"• Clientes: {client_str}\n"
+            f"• Intervalo: a cada {interval} minutos\n"
+            f"• Canal: {channel}\n"
+            f"• Alertas: {prio_str}\n"
+            f"O monitor compara o estado atual com o snapshot anterior e posta apenas quando algo muda."
+        )
+
+    elif action == "remove":
+        job_id = tool_input.get("job_id")
+        if not job_id:
+            return "Erro: `job_id` é obrigatório para remover um monitoramento."
+        removed = await remove_monitoring_job(int(job_id))
+        if removed:
+            return f"Monitoramento ID `{job_id}` removido."
+        return f"ID `{job_id}` não encontrado."
+
+    return f"Ação desconhecida: {action}"
 
 
 async def _schedule_report(tool_input: dict) -> str:

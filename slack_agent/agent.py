@@ -66,6 +66,8 @@ _REPORT_TOOL_NAMES = {
     "productive_list_projects",
     "productive_list_time_entries",
     "productive_list_tasks",
+    # Monitoring
+    "monitor_client",
     # Memory — always available
     "memory_recall",
     "memory_save",

@@ -60,6 +60,15 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
         replace_existing=True,
     )
 
+    # Delta monitoring jobs — check every minute, run those that are due
+    scheduler.add_job(
+        _run_due_monitor_jobs,
+        "interval",
+        minutes=1,
+        id="delta_monitors",
+        replace_existing=True,
+    )
+
     logger.info("Scheduler configured with %d jobs", len(scheduler.get_jobs()))
     return scheduler
 
@@ -149,6 +158,17 @@ async def _run_due_scheduled_reports() -> None:
                 logger.error("Scheduled report %d failed: %s", report["id"], exc)
     except Exception as exc:
         logger.error("_run_due_scheduled_reports failed: %s", exc)
+
+
+async def _run_due_monitor_jobs() -> None:
+    """Delegate to monitor_service — runs all due delta monitoring jobs."""
+    if not _slack_client:
+        return
+    try:
+        from .monitor_service import run_all_monitor_jobs
+        await run_all_monitor_jobs(_slack_client)
+    except Exception as exc:
+        logger.error("_run_due_monitor_jobs failed: %s", exc)
 
 
 async def _check_deals_without_followup() -> None:

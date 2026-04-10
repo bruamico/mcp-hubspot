@@ -78,6 +78,26 @@ async def init_db() -> None:
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS monitoring_jobs (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                client           TEXT,
+                interval_minutes INTEGER NOT NULL DEFAULT 60,
+                channel          TEXT NOT NULL,
+                min_priority     TEXT NOT NULL DEFAULT 'orange',
+                active           INTEGER DEFAULT 1,
+                last_run_at      DATETIME,
+                created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS monitoring_snapshots (
+                client_key   TEXT PRIMARY KEY,
+                context      TEXT NOT NULL,
+                captured_at  REAL NOT NULL,
+                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 client_key  TEXT NOT NULL DEFAULT '',
@@ -462,3 +482,82 @@ async def list_channel_mappings() -> list[dict]:
             "SELECT client_key, channel_name, updated_at FROM channel_mappings ORDER BY client_key"
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Monitoring jobs + snapshots
+# ---------------------------------------------------------------------------
+
+async def add_monitoring_job(
+    client: str | None,
+    interval_minutes: int,
+    channel: str,
+    min_priority: str = "orange",
+) -> int:
+    """Create a new monitoring job. Returns the new job id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO monitoring_jobs
+               (client, interval_minutes, channel, min_priority, active)
+               VALUES (?, ?, ?, ?, 1)""",
+            (client, interval_minutes, channel, min_priority),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def remove_monitoring_job(job_id: int) -> bool:
+    """Deactivate a monitoring job. Returns True if found."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE monitoring_jobs SET active=0 WHERE id=?", (job_id,)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def list_monitoring_jobs() -> list[dict]:
+    """Return all active monitoring jobs."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT id, client, interval_minutes, channel, min_priority,
+                      last_run_at, created_at
+               FROM monitoring_jobs WHERE active=1 ORDER BY id"""
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def update_monitoring_job_last_run(job_id: int) -> None:
+    """Update last_run_at to now for a monitoring job."""
+    from datetime import datetime, timezone
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE monitoring_jobs SET last_run_at=? WHERE id=?", (now_iso, job_id)
+        )
+        await db.commit()
+
+
+async def get_monitoring_snapshot(client_key: str) -> dict | None:
+    """Return the last saved snapshot for a client, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT client_key, context, captured_at FROM monitoring_snapshots WHERE client_key=?",
+            (client_key,),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def save_monitoring_snapshot(client_key: str, context: str, captured_at: float) -> None:
+    """Insert or update a monitoring snapshot."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO monitoring_snapshots
+               (client_key, context, captured_at, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
+            (client_key, context, captured_at),
+        )
+        await db.commit()
