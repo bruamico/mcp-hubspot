@@ -243,7 +243,10 @@ h1{color:#4ade80;} p{color:#aaa;}</style></head>
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _GOOGLE_REDIRECT = "https://tropical-bot.fly.dev/oauth/google/callback"
-_GOOGLE_SCOPES = "https://www.googleapis.com/auth/calendar.readonly"
+_GOOGLE_SCOPES = " ".join([
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+])
 
 _google_state_store: dict[str, str] = {}  # state → "pending"
 

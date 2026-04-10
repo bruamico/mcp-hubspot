@@ -11,6 +11,7 @@ from typing import Any
 import anthropic
 
 from .tools.gcal_tools import GCAL_TOOL_DEFINITIONS, execute_gcal_tool
+from .tools.gmail_tools import GMAIL_TOOL_DEFINITIONS, execute_gmail_tool
 from .tools.granola_tools import GRANOLA_TOOL_DEFINITIONS, execute_granola_tool
 from .tools.hubspot_tools import HUBSPOT_TOOL_DEFINITIONS, execute_hubspot_tool
 from .tools.memory_tools import MEMORY_TOOL_DEFINITIONS, execute_memory_tool
@@ -28,6 +29,7 @@ MAX_TOOL_RESULT_CHARS = int(os.getenv("AGENT_MAX_TOOL_RESULT_CHARS", "4000"))
 
 ALL_TOOL_DEFINITIONS = (
     GCAL_TOOL_DEFINITIONS
+    + GMAIL_TOOL_DEFINITIONS
     + GRANOLA_TOOL_DEFINITIONS
     + HUBSPOT_TOOL_DEFINITIONS
     + MEMORY_TOOL_DEFINITIONS
@@ -109,8 +111,12 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> str:
     readai_names = {t["name"] for t in READAI_TOOL_DEFINITIONS}
     slack_names = {t["name"] for t in SLACK_TOOL_DEFINITIONS}
 
+    gmail_names = {t["name"] for t in GMAIL_TOOL_DEFINITIONS}
+
     if tool_name in gcal_names:
         return await execute_gcal_tool(tool_name, tool_input)
+    elif tool_name in gmail_names:
+        return await execute_gmail_tool(tool_name, tool_input)
     elif tool_name in granola_names:
         return await execute_granola_tool(tool_name, tool_input)
     elif tool_name in hubspot_names:
