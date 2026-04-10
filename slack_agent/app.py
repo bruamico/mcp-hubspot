@@ -81,7 +81,7 @@ async def _process_message(event: dict, say, client) -> None:
             all_clients = list(ws.keys())
             specific = extract_client(user_message, all_clients)
             clients = [specific] if specific else all_clients
-            hours_back = extract_hours_back(user_message, default=24)
+            hours_back = extract_hours_back(user_message, default=48)
 
             response = await generate_report(clients, hours_back=hours_back)
         else:

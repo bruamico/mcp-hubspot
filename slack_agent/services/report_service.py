@@ -23,37 +23,59 @@ MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 async def _fetch_internal_slack(client_key: str, hours_back: int) -> str:
     try:
         from ..tools.slack_tools import _read_tropical_channel
-        return await _read_tropical_channel(client_key, hours_back=hours_back, limit=40)
+        result = await _read_tropical_channel(client_key, hours_back=hours_back, limit=40)
+        # Surface channel-not-found as explicit error so Claude doesn't say "sem atividade"
+        if "não encontrado" in result and "Canais disponíveis" in result:
+            return f"⚠️ERRO: {result}"
+        return result
     except Exception as exc:
-        return f"(erro ao ler canal interno: {exc})"
+        logger.error("_fetch_internal_slack(%s): %s", client_key, exc)
+        return f"⚠️ERRO ao ler canal interno: {exc}"
 
 
 async def _fetch_external_slack(client_key: str, hours_back: int) -> str:
     try:
         from ..tools.slack_tools import _get_client_overview
-        return await _get_client_overview(client_key, hours_back=hours_back, limit_per_channel=15, exclude_bots=True)
+        result = await _get_client_overview(client_key, hours_back=hours_back, limit_per_channel=15, exclude_bots=True)
+        if "não encontrado" in result:
+            return f"⚠️ERRO: workspace '{client_key}' não configurado no WORKSPACES_JSON."
+        return result
     except Exception as exc:
-        return f"(erro ao ler workspace externo: {exc})"
+        logger.error("_fetch_external_slack(%s): %s", client_key, exc)
+        return f"⚠️ERRO ao ler workspace externo: {exc}"
 
 
 async def _fetch_readai(client_key: str, hours_back: int) -> str:
     try:
-        from ..models.database import search_meetings, get_recent_meetings
-        rows = await search_meetings(client_key, limit=5)
+        from ..models.database import search_meetings
+        rows = await search_meetings(client_key, limit=10)
         if not rows:
             return "Nenhuma reunião encontrada no Read.ai para esse cliente."
-        parts = []
         cutoff = time.time() - hours_back * 3600
+        parts = []
         for r in rows:
+            # Filter by date within the time window
+            try:
+                import datetime as _dt
+                row_ts = _dt.datetime.fromisoformat(
+                    (r.get("date") or r.get("created_at") or "2000-01-01")[:10]
+                ).timestamp()
+                if row_ts < cutoff:
+                    continue
+            except Exception:
+                pass
             parts.append(
                 f"• {r.get('date','?')[:10]} — {r.get('title','?')}\n"
                 f"  Participantes: {r.get('participants','?')}\n"
                 f"  Resumo: {(r.get('summary') or '')[:400]}\n"
                 f"  Action items: {(r.get('action_items') or '')[:300]}"
             )
+        if not parts:
+            return "Nenhuma reunião no Read.ai dentro da janela de tempo solicitada."
         return "\n".join(parts)
     except Exception as exc:
-        return f"(erro Read.ai: {exc})"
+        logger.error("_fetch_readai(%s): %s", client_key, exc)
+        return f"⚠️ERRO Read.ai: {exc}"
 
 
 async def _fetch_hubspot(client_key: str) -> str:
@@ -88,7 +110,8 @@ async def _fetch_hubspot(client_key: str) -> str:
             lines.append(f"• [{date_str}] {etype}: {subject}")
         return "\n".join(lines)
     except Exception as exc:
-        return f"(erro HubSpot: {exc})"
+        logger.error("_fetch_hubspot(%s): %s", client_key, exc)
+        return f"⚠️ERRO HubSpot: {exc}"
 
 
 async def _fetch_productive(client_key: str) -> str:
@@ -114,9 +137,10 @@ async def _fetch_productive(client_key: str) -> str:
         projects = await _list_projects(status="active", company_id=company_id, limit=10)
         return f"Empresa Productive: *{company_name}*\n{projects[:600]}"
     except KeyError as exc:
-        return f"(Productive não configurado: variável de ambiente {exc} ausente)"
+        return f"⚠️ERRO Productive: variável de ambiente {exc} ausente"
     except Exception as exc:
-        return f"(erro Productive: {exc})"
+        logger.error("_fetch_productive(%s): %s", client_key, exc)
+        return f"⚠️ERRO Productive: {exc}"
 
 
 async def _fetch_unanswered(client_key: str) -> str:
@@ -206,6 +230,7 @@ Regras:
 - Não repita a mesma informação em seções diferentes
 - Clientes sem nenhuma atividade: escreva apenas "Sem atividade no período." e siga para o próximo
 - Separe clientes com uma linha em branco
+- CRÍTICO: quando uma fonte contém "⚠️ERRO", escreva literalmente `_(fonte indisponível: [motivo])_` nessa seção — NUNCA interprete erro como "sem atividade". Ausência de dados ≠ erro de sistema.
 """
 
 
@@ -301,16 +326,19 @@ def is_report_request(text: str) -> bool:
     return bool(_REPORT_RE.search(text))
 
 
-def extract_hours_back(text: str, default: int = 24) -> int:
+def extract_hours_back(text: str, default: int = 48) -> int:
     m = _HOURS_RE.search(text)
     if m:
         return int(m.group(1))
     m = _DAYS_RE.search(text)
     if m:
         return int(m.group(1)) * 24
-    if "hoje" in text.lower():
+    tl = text.lower()
+    if "hoje" in tl:
         return 24
-    if "semana" in text.lower():
+    if "ontem" in tl:
+        return 48
+    if "semana" in tl:
         return 168
     return default
 
