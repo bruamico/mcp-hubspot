@@ -26,7 +26,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 
 from .agent import run_agent
-from .models.database import init_db, save_oauth_token
+from .models.database import init_db, save_oauth_token, reprocess_raw_payloads
 from .prompts import SYSTEM_PROMPT
 from .services.conversation import ConversationMemory
 from .services.report_service import (
@@ -241,6 +241,9 @@ h1{color:#4ade80;} p{color:#aaa;}</style></head>
 async def main() -> None:
     logger.info("Initializing database…")
     await init_db()
+    n = await reprocess_raw_payloads()
+    if n:
+        logger.info("Re-processed %d Read.ai records with missing fields", n)
 
     logger.info("Starting Slack Socket Mode handler…")
     socket_handler = AsyncSocketModeHandler(

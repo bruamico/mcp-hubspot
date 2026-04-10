@@ -191,13 +191,23 @@ async def get_oauth_token(service: str) -> dict | None:
 
 
 async def upsert_readai_call(meeting_id: str, data: dict) -> bool:
-    """Insert or ignore a Read.ai meeting call. Returns True if new."""
+    """Insert or update a Read.ai meeting call. Returns True if new."""
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
+        async with db.execute("SELECT 1 FROM readai_calls WHERE meeting_id = ?", (meeting_id,)) as cur:
+            exists = await cur.fetchone() is not None
+        await db.execute(
             """
-            INSERT OR IGNORE INTO readai_calls
+            INSERT INTO readai_calls
                 (meeting_id, title, date, duration, participants, summary, action_items, raw_payload)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(meeting_id) DO UPDATE SET
+                title        = excluded.title,
+                date         = excluded.date,
+                duration     = excluded.duration,
+                participants = excluded.participants,
+                summary      = excluded.summary,
+                action_items = excluded.action_items,
+                raw_payload  = excluded.raw_payload
             """,
             (
                 meeting_id,
@@ -211,7 +221,77 @@ async def upsert_readai_call(meeting_id: str, data: dict) -> bool:
             ),
         )
         await db.commit()
-        return cursor.rowcount > 0
+        return not exists
+
+
+async def reprocess_raw_payloads() -> int:
+    """Re-parse raw_payload for all meetings with empty title. Returns count updated."""
+    import json as _json
+
+    def _extract(payload: dict) -> dict:
+        meeting = (
+            payload.get("meeting")
+            or payload.get("data", {}).get("meeting")
+            or payload.get("data")
+            or payload
+        )
+        summary_raw = meeting.get("summary") or meeting.get("transcript_summary") or {}
+        if isinstance(summary_raw, dict):
+            summary_text = summary_raw.get("overview") or summary_raw.get("text") or ""
+            ai_raw = summary_raw.get("action_items") or meeting.get("action_items") or []
+        else:
+            summary_text = str(summary_raw) if summary_raw else ""
+            ai_raw = meeting.get("action_items") or []
+        participants_raw = meeting.get("participants") or []
+        if isinstance(participants_raw, list):
+            participants = ", ".join(
+                (p.get("name") or p.get("email") or "") if isinstance(p, dict) else str(p)
+                for p in participants_raw
+            )
+        else:
+            participants = str(participants_raw)
+        if isinstance(ai_raw, list):
+            action_items = "\n".join(
+                f"- {a.get('text', str(a))}" if isinstance(a, dict) else f"- {a}"
+                for a in ai_raw
+            )
+        else:
+            action_items = str(ai_raw) if ai_raw else ""
+        return {
+            "title": meeting.get("title") or meeting.get("name") or "",
+            "date": meeting.get("date") or meeting.get("start_time") or meeting.get("created_at") or "",
+            "duration": meeting.get("duration") or 0,
+            "participants": participants,
+            "summary": summary_text,
+            "action_items": action_items,
+        }
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT meeting_id, raw_payload FROM readai_calls WHERE (title IS NULL OR title = '') AND raw_payload IS NOT NULL AND raw_payload != ''"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        updated = 0
+        for row in rows:
+            try:
+                payload = _json.loads(row["raw_payload"])
+                data = _extract(payload)
+                if data.get("title") or data.get("summary"):
+                    await db.execute(
+                        """UPDATE readai_calls SET title=?, date=?, duration=?, participants=?, summary=?, action_items=?
+                           WHERE meeting_id=?""",
+                        (data["title"], data["date"], data["duration"],
+                         data["participants"], data["summary"], data["action_items"],
+                         row["meeting_id"]),
+                    )
+                    updated += 1
+            except Exception:
+                pass
+        await db.commit()
+    logger.info("reprocess_raw_payloads: updated %d records", updated)
+    return updated
 
 
 async def was_alert_sent(alert_key: str) -> bool:

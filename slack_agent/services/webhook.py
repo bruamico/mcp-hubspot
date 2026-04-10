@@ -54,29 +54,89 @@ def validate_signature(raw_body: bytes, signature_header: str) -> bool:
 
 
 def _extract_meeting_data(payload: dict) -> dict:
-    """Normalize a Read.ai webhook payload into our schema."""
-    meeting = payload.get("meeting") or payload
-    participants = meeting.get("participants") or []
-    if isinstance(participants, list):
-        participants = ", ".join(
-            p.get("name") or p.get("email", "") for p in participants
-        )
+    """
+    Normalize a Read.ai webhook payload into our schema.
 
-    action_items = meeting.get("action_items") or []
-    if isinstance(action_items, list):
-        action_items = "\n".join(
-            f"- {a.get('text', str(a))}" for a in action_items
+    Read.ai payload structures observed:
+      { "meeting": { "id": ..., "title": ..., "summary": { "overview": ..., "action_items": [...] } } }
+      { "data": { "id": ..., "title": ..., ... } }
+      { "meeting_id": ..., "title": ..., ... }  (flat)
+    """
+    # Unwrap common envelope structures
+    meeting = (
+        payload.get("meeting")
+        or payload.get("data", {}).get("meeting")
+        or payload.get("data")
+        or payload
+    )
+
+    # --- participants ---
+    participants_raw = meeting.get("participants") or []
+    if isinstance(participants_raw, list):
+        names = []
+        for p in participants_raw:
+            if isinstance(p, dict):
+                names.append(p.get("name") or p.get("email") or "")
+            elif isinstance(p, str):
+                names.append(p)
+        participants = ", ".join(n for n in names if n)
+    else:
+        participants = str(participants_raw)
+
+    # --- summary (may be object or string) ---
+    summary_raw = meeting.get("summary") or meeting.get("transcript_summary") or {}
+    if isinstance(summary_raw, dict):
+        summary_text = (
+            summary_raw.get("overview")
+            or summary_raw.get("text")
+            or summary_raw.get("summary")
+            or ""
         )
+        # action_items may live inside summary object
+        action_items_raw = summary_raw.get("action_items") or meeting.get("action_items") or []
+    else:
+        summary_text = str(summary_raw) if summary_raw else ""
+        action_items_raw = meeting.get("action_items") or []
+
+    # --- action items ---
+    if isinstance(action_items_raw, list):
+        items = []
+        for a in action_items_raw:
+            if isinstance(a, dict):
+                text = a.get("text") or a.get("content") or str(a)
+                assignee = a.get("assignee") or a.get("owner") or ""
+                items.append(f"- {text}" + (f" ({assignee})" if assignee else ""))
+            elif isinstance(a, str):
+                items.append(f"- {a}")
+        action_items = "\n".join(items)
+    else:
+        action_items = str(action_items_raw) if action_items_raw else ""
 
     return {
-        "title": meeting.get("title") or meeting.get("name", ""),
-        "date": meeting.get("date") or meeting.get("start_time", ""),
+        "title": meeting.get("title") or meeting.get("name") or "",
+        "date": (
+            meeting.get("date")
+            or meeting.get("start_time")
+            or meeting.get("created_at")
+            or ""
+        ),
         "duration": meeting.get("duration") or 0,
         "participants": participants,
-        "summary": meeting.get("summary") or meeting.get("transcript_summary", ""),
+        "summary": summary_text,
         "action_items": action_items,
         "raw_payload": json.dumps(payload),
     }
+
+
+def _extract_meeting_id(payload: dict) -> str:
+    return (
+        payload.get("meeting_id")
+        or payload.get("id")
+        or payload.get("meeting", {}).get("id")
+        or payload.get("data", {}).get("id")
+        or payload.get("data", {}).get("meeting", {}).get("id")
+        or ""
+    )
 
 
 async def handle_readai_webhook(request: web.Request) -> web.Response:
@@ -95,19 +155,14 @@ async def handle_readai_webhook(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.Response(status=400, text="Invalid JSON")
 
-    meeting_id = (
-        payload.get("meeting_id")
-        or payload.get("id")
-        or payload.get("meeting", {}).get("id", "")
-    )
+    meeting_id = _extract_meeting_id(payload)
     if not meeting_id:
-        logger.warning("Read.ai payload missing meeting_id — ignoring")
+        logger.warning("Read.ai payload missing meeting_id: %s", str(payload)[:200])
         return web.Response(status=200, text="ok")
 
     data = _extract_meeting_data(payload)
+    logger.info("Read.ai meeting %s — title=%r participants=%r", meeting_id, data["title"], data["participants"][:60])
     is_new = await upsert_readai_call(meeting_id, data)
-    logger.info(
-        "Read.ai meeting %s %s", meeting_id, "stored" if is_new else "already exists"
-    )
+    logger.info("Read.ai meeting %s %s", meeting_id, "stored" if is_new else "updated")
 
     return web.Response(status=200, text="ok")
