@@ -45,6 +45,7 @@ _REPORT_TOOL_NAMES = {
     "hubspot_get_company_timeline",
     "hubspot_get_active_companies",
     "hubspot_get_active_contacts",
+    "hubspot_search_contact_by_name",
     # Slack — internal + external reading
     "slack_list_clients",
     "slack_read_tropical_channel",
@@ -55,8 +56,11 @@ _REPORT_TOOL_NAMES = {
     # Meetings
     "readai_get_recent_meetings",
     "readai_search_meetings",
+    "granola_list_available_tools",
+    "granola_call_tool",
     "granola_list_notes",
     "granola_search_notes",
+    "granola_get_note",
     # Productive — overview only
     "productive_list_projects",
     "productive_list_time_entries",
