@@ -133,6 +133,8 @@ async def build_webhook_app() -> web.Application:
     aio_app.router.add_get("/health", lambda r: web.Response(text="ok"))
     aio_app.router.add_get("/oauth/granola", _granola_oauth_start)
     aio_app.router.add_get("/oauth/granola/callback", _granola_oauth_callback)
+    aio_app.router.add_get("/oauth/google", _google_oauth_start)
+    aio_app.router.add_get("/oauth/google/callback", _google_oauth_callback)
     return aio_app
 
 
@@ -229,6 +231,87 @@ h1{color:#4ade80;} p{color:#aaa;}</style></head>
 <body><div class="box">
 <h1>✅ Granola autorizado!</h1>
 <p>O Tropical Bot agora tem acesso às suas notas de reunião do Granola.</p>
+<p>Pode fechar esta janela e voltar ao Slack.</p>
+</div></body></html>""",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar OAuth 2.0 flow
+# ---------------------------------------------------------------------------
+
+_GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_REDIRECT = "https://tropical-bot.fly.dev/oauth/google/callback"
+_GOOGLE_SCOPES = "https://www.googleapis.com/auth/calendar.readonly"
+
+_google_state_store: dict[str, str] = {}  # state → "pending"
+
+
+async def _google_oauth_start(request: web.Request) -> web.Response:
+    from urllib.parse import urlencode
+    state = _secrets.token_hex(16)
+    _google_state_store[state] = "pending"
+    params = urlencode({
+        "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+        "redirect_uri": _GOOGLE_REDIRECT,
+        "response_type": "code",
+        "scope": _GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    raise web.HTTPFound(f"{_GOOGLE_AUTH_URL}?{params}")
+
+
+async def _google_oauth_callback(request: web.Request) -> web.Response:
+    import aiohttp as _aiohttp
+
+    code = request.rel_url.query.get("code")
+    state = request.rel_url.query.get("state")
+    error = request.rel_url.query.get("error")
+
+    if error:
+        return web.Response(text=f"OAuth error: {error}", status=400)
+    if not code or not state or state not in _google_state_store:
+        return web.Response(text="Parâmetros inválidos.", status=400)
+
+    _google_state_store.pop(state)
+
+    async with _aiohttp.ClientSession() as session:
+        async with session.post(_GOOGLE_TOKEN_URL, data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": _GOOGLE_REDIRECT,
+            "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+            "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+        }) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                logger.error("Google token exchange failed: %s", body)
+                return web.Response(text=f"Token exchange failed: {body}", status=500)
+            data = await resp.json()
+
+    await save_oauth_token(
+        service="google_calendar",
+        access_token=data["access_token"],
+        refresh_token=data.get("refresh_token", ""),
+        expires_in=data.get("expires_in", 3600),
+        scope=data.get("scope", ""),
+    )
+    logger.info("Google Calendar OAuth tokens saved successfully")
+
+    return web.Response(
+        content_type="text/html",
+        text="""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Google Calendar autorizado</title>
+<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;
+height:100vh;margin:0;background:#0f0f0f;color:#fff;}
+.box{text-align:center;padding:2rem;border:1px solid #333;border-radius:12px;}
+h1{color:#4ade80;} p{color:#aaa;}</style></head>
+<body><div class="box">
+<h1>✅ Google Calendar autorizado!</h1>
+<p>O Tropical Bot agora tem acesso à sua agenda.</p>
 <p>Pode fechar esta janela e voltar ao Slack.</p>
 </div></body></html>""",
     )
