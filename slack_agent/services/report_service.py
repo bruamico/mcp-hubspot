@@ -34,12 +34,40 @@ async def _fetch_all_internal_slack(hours_back: int) -> str:
         from slack_sdk.web.async_client import AsyncWebClient
         from ..tools.slack_tools import _get_tropical_channels, _fmt_ts
 
+        import re as _re
+
         sc = AsyncWebClient(token=token)
         channels = await _get_tropical_channels(sc)
         logger.info("Internal Slack scan: %d channels, last %dh", len(channels), hours_back)
 
         oldest = str(time.time() - hours_back * 3600)
         sem = asyncio.Semaphore(15)  # cap concurrent API calls
+
+        # User ID → display name cache (shared across all channels)
+        _user_cache: dict[str, str] = {}
+
+        async def _resolve_user(uid: str) -> str:
+            if uid not in _user_cache:
+                try:
+                    info = await sc.users_info(user=uid)
+                    u = info.get("user", {})
+                    _user_cache[uid] = (
+                        u.get("profile", {}).get("display_name")
+                        or u.get("real_name")
+                        or u.get("name")
+                        or uid
+                    )
+                except Exception:
+                    _user_cache[uid] = uid
+            return _user_cache[uid]
+
+        async def _resolve_mentions(text: str) -> str:
+            """Replace <@UXXX> with @Name in message text."""
+            uids = _re.findall(r"<@([A-Z0-9]+)>", text)
+            for uid in set(uids):
+                name = await _resolve_user(uid)
+                text = text.replace(f"<@{uid}>", f"@{name}")
+            return text
 
         async def _read(ch: dict) -> str | None:
             async with sem:
@@ -55,9 +83,15 @@ async def _fetch_all_internal_slack(hours_back: int) -> str:
                         return None
                     lines = []
                     for m in reversed(msgs):
-                        text = m.get("text", "").strip()[:220]
-                        if text:
-                            lines.append(f"  [{_fmt_ts(m.get('ts',''))}] {text}")
+                        raw = m.get("text", "").strip()
+                        if not raw:
+                            continue
+                        text = (await _resolve_mentions(raw))[:220]
+                        # Resolve sender name
+                        sender = ""
+                        if m.get("user"):
+                            sender = await _resolve_user(m["user"]) + ": "
+                        lines.append(f"  [{_fmt_ts(m.get('ts',''))}] {sender}{text}")
                     return f"#{ch['name']}:\n" + "\n".join(lines) if lines else None
                 except Exception:
                     return None
