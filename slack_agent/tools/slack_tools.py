@@ -562,7 +562,13 @@ async def _get_client_overview(
                 continue
             uid = msg.get("user", "")
             name = await get_username(uid) if uid else "bot"
-            text = msg.get("text", "").strip()[:300]
+            raw_text = msg.get("text", "").strip()
+            # Resolve <@UXXX> mentions to names
+            import re as _re
+            for mentioned_uid in set(_re.findall(r"<@([A-Z0-9]+)>", raw_text)):
+                mentioned_name = await get_username(mentioned_uid)
+                raw_text = raw_text.replace(f"<@{mentioned_uid}>", f"@{mentioned_name}")
+            text = raw_text[:300]
             if text:
                 lines.append(f"  [{_fmt_ts(msg.get('ts',''))}] {name}: {text}")
 

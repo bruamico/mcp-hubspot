@@ -74,7 +74,11 @@ async def _process_message(event: dict, say, client) -> None:
     try:
         history = await memory.get_history(channel, thread_ts)
 
-        if is_report_request(user_message):
+        # Fast path only when NOT asking to filter by calendar/agenda
+        _calendar_keywords = ("agenda", "reunião de hoje", "meetings", "calendário")
+        _wants_calendar_filter = any(kw in user_message.lower() for kw in _calendar_keywords)
+
+        if is_report_request(user_message) and not _wants_calendar_filter:
             # Fast path: pre-fetch all data in parallel, single Claude synthesis call
             from .tools.slack_tools import _get_workspaces
             ws = await _get_workspaces()
