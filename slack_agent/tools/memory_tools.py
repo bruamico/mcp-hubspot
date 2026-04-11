@@ -7,10 +7,15 @@ Organized by client_key (wing) + topic (room).
 Wings  → client_key: 'galena', 'sympla', '' (global/equipe)
 Rooms  → topic:      'decisões', 'preferências', 'acionáveis', 'contexto', 'reuniões'
 """
-import json
 import logging
 
-from ..models.database import save_memory, recall_memories, list_memory_topics, delete_memory
+import numpy as np
+
+from ..models.database import (
+    save_memory, recall_memories, fetch_memories_with_embeddings,
+    list_memory_topics, delete_memory,
+)
+from ..services.embeddings import embed, is_available
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +152,17 @@ async def _recall(tool_input: dict) -> str:
     query = tool_input.get("query")
     limit = int(tool_input.get("limit", 10))
 
-    rows = await recall_memories(
-        client_key=client_key,
-        topic=topic,
-        query=query,
-        limit=limit,
-    )
+    if query and is_available():
+        rows = await _semantic_recall(client_key, topic, query, limit)
+        search_mode = "semântica"
+    else:
+        rows = await recall_memories(
+            client_key=client_key,
+            topic=topic,
+            query=query,
+            limit=limit,
+        )
+        search_mode = "palavra-chave" if query else "recente"
 
     if not rows:
         scope = f"cliente '{client_key}'" if client_key else "equipe (global)"
@@ -167,7 +177,54 @@ async def _recall(tool_input: dict) -> str:
         )
 
     scope = f"*{client_key}*" if client_key else "*equipe (global)*"
-    return f"Memórias de {scope} ({len(rows)} encontradas):\n\n" + "\n\n---\n".join(lines)
+    return (
+        f"Memórias de {scope} ({len(rows)} encontradas, busca {search_mode}):\n\n"
+        + "\n\n---\n".join(lines)
+    )
+
+
+async def _semantic_recall(
+    client_key: str,
+    topic: str | None,
+    query: str,
+    limit: int,
+) -> list[dict]:
+    """
+    Semantic recall: rank all stored memories by cosine similarity to the query.
+    Falls back gracefully: memories without embeddings are ranked last (score 0)
+    but included if they also match the query via LIKE.
+    """
+    query_emb = embed(query)
+    if query_emb is None:
+        # Embedding failed at runtime — fall back to LIKE
+        return await recall_memories(client_key=client_key, topic=topic, query=query, limit=limit)
+
+    # Fetch all candidates (up to 500) with their embeddings
+    candidates = await fetch_memories_with_embeddings(
+        client_key=client_key, topic=topic, limit=500
+    )
+    if not candidates:
+        return []
+
+    # For memories without embeddings: include if LIKE match, score 0.5
+    # For memories with embeddings: score = cosine similarity
+    query_lower = query.lower()
+    q_vec = np.frombuffer(query_emb, dtype=np.float32)
+    scored: list[tuple[float, dict]] = []
+    for row in candidates:
+        emb = row.get("embedding")
+        if emb:
+            score = float(np.dot(q_vec, np.frombuffer(emb, dtype=np.float32)))
+        elif query_lower in (row.get("content") or "").lower():
+            score = 0.5  # keyword match in legacy memory without embedding
+        else:
+            score = 0.0
+        scored.append((score, row))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Filter out zero-score memories with no embedding and no keyword match
+    results = [r for score, r in scored if score > 0.0]
+    return results[:limit]
 
 
 async def _save(tool_input: dict) -> str:
@@ -179,16 +236,21 @@ async def _save(tool_input: dict) -> str:
     if not content.strip():
         return "Erro: `content` não pode ser vazio."
 
+    # Generate embedding for semantic recall — transparent, no error if unavailable
+    embedding = embed(content)
+
     memory_id = await save_memory(
         client_key=client_key,
         topic=topic,
         content=content,
         source=source,
+        embedding=embedding,
     )
 
     scope = f"*{client_key}*" if client_key else "*equipe (global)*"
+    sem_tag = " 🧠" if embedding else ""
     return (
-        f"Memória salva (ID: `{memory_id}`):\n"
+        f"Memória salva{sem_tag} (ID: `{memory_id}`):\n"
         f"• Cliente: {scope} | Tópico: `{topic}`\n"
         f"• Conteúdo: {content[:200]}"
     )

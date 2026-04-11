@@ -122,6 +122,7 @@ async def init_db() -> None:
             ("readai_calls", "action_items", "TEXT"),
             ("readai_calls", "raw_payload",  "TEXT"),
             ("readai_calls", "created_at",   "DATETIME DEFAULT '2000-01-01 00:00:00'"),
+            ("memories",     "embedding",    "BLOB"),
         ]
         for table, col, col_type in _col_migrations:
             try:
@@ -378,12 +379,13 @@ async def save_memory(
     topic: str,
     content: str,
     source: str = "agent",
+    embedding: bytes | None = None,
 ) -> int:
     """Save a memory entry. Returns the new row id."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO memories (client_key, topic, content, source) VALUES (?, ?, ?, ?)",
-            (client_key.lower().strip(), topic.lower().strip(), content.strip(), source),
+            "INSERT INTO memories (client_key, topic, content, source, embedding) VALUES (?, ?, ?, ?, ?)",
+            (client_key.lower().strip(), topic.lower().strip(), content.strip(), source, embedding),
         )
         await db.commit()
         return cursor.lastrowid
@@ -418,6 +420,39 @@ async def recall_memories(
         async with db.execute(
             f"""
             SELECT id, client_key, topic, content, source, created_at
+            FROM memories
+            WHERE {where}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def fetch_memories_with_embeddings(
+    client_key: str = "",
+    topic: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Return memories including their embedding blobs.
+    Used by semantic recall — loads all candidates so we can rank by similarity.
+    """
+    conditions = ["client_key = ?"]
+    params: list = [client_key.lower().strip()]
+    if topic:
+        conditions.append("topic = ?")
+        params.append(topic.lower().strip())
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""
+            SELECT id, client_key, topic, content, source, embedding, created_at
             FROM memories
             WHERE {where}
             ORDER BY created_at DESC
