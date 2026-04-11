@@ -360,6 +360,16 @@ SLACK_TOOL_DEFINITIONS = [
             "required": ["action"],
         },
     },
+    {
+        "name": "slack_client_map",
+        "description": (
+            "Gera uma tabela de mapeamento de todos os clientes: chave do workspace, "
+            "descrição, canal interno correspondente e empresa encontrada no HubSpot "
+            "(com ID e domínio). Use para verificar se os nomes estão corretos e se "
+            "cada cliente tem uma company correspondente no CRM."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -419,6 +429,9 @@ async def execute_slack_tool(tool_name: str, tool_input: dict) -> str:
 
         elif tool_name == "schedule_report":
             return await _schedule_report(tool_input)
+
+        elif tool_name == "slack_client_map":
+            return await _client_map()
 
         else:
             return f"Ferramenta desconhecida: {tool_name}"
@@ -862,6 +875,91 @@ async def _schedule_report(tool_input: dict) -> str:
         return f"ID `{report_id}` não encontrado."
 
     return f"Ação desconhecida: {action}"
+
+
+async def _client_map() -> str:
+    """
+    Build a verification table: workspace key → internal channel → HubSpot company.
+    Searches HubSpot by workspace key first, then by description, picks best match.
+    """
+    import json as _json
+    import asyncio as _asyncio
+
+    ws = await _get_workspaces()
+    ch_rows = await list_channel_mappings()
+    ch_map = {r["client_key"]: r["channel_name"] for r in ch_rows}
+
+    # Get HubSpot portal ID for building direct URLs
+    try:
+        from ..tools.hubspot_tools import _hs_client
+        import urllib.request as _req
+        token = os.getenv("HUBSPOT_ACCESS_TOKEN") or os.getenv("HUBSPOT_TOKEN", "")
+        r = _req.Request(
+            "https://api.hubapi.com/oauth/v1/access-tokens/" + token,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with _req.urlopen(r, timeout=8) as resp:
+            portal_id = _json.loads(resp.read()).get("hub_id", "")
+    except Exception:
+        portal_id = ""
+
+    def _hub_url(company_id: str) -> str:
+        if portal_id:
+            return f"https://app.hubspot.com/contacts/{portal_id}/company/{company_id}"
+        return f"https://app.hubspot.com/contacts/companies/{company_id}"
+
+    try:
+        from ..tools.hubspot_tools import _hs_client
+        hs = _hs_client()
+    except Exception as exc:
+        return f"⚠️ HubSpot não disponível: {exc}"
+
+    rows: list[str] = []
+
+    for key, entry in ws.items():
+        desc = entry.get("description", key)
+        # Internal channel: explicit mapping > same-name assumption
+        channel = "#" + ch_map.get(key, key)
+
+        # Search HubSpot: try workspace key first, then description
+        hub_name = hub_id = hub_domain = ""
+        for search_term in ([key, desc] if desc.lower() != key.lower() else [key]):
+            try:
+                raw = hs.search_companies_by_name(search_term, limit=1)
+                data = _json.loads(raw)
+                results = data.get("results", [])
+                if results:
+                    props = results[0].get("properties", {})
+                    hub_name = props.get("name", "?")
+                    hub_id = results[0].get("id", "")
+                    hub_domain = props.get("domain", "")
+                    break
+            except Exception:
+                pass
+
+        if hub_id:
+            status = "✅"
+            hub_str = f"*{hub_name}* (ID `{hub_id}`)"
+            if hub_domain:
+                hub_str += f"\n       domínio: {hub_domain}"
+            hub_str += f"\n       🔗 {_hub_url(hub_id)}"
+        else:
+            status = "❌"
+            hub_str = "não encontrado no HubSpot"
+
+        rows.append(
+            f"{status} *{desc}* (`{key}`)\n"
+            f"   • Canal interno: `{channel}`\n"
+            f"   • HubSpot: {hub_str}"
+        )
+
+    total = len(ws)
+    matched = sum(1 for r in rows if r.startswith("✅"))
+    header = (
+        f"*Mapa de clientes — {matched}/{total} com match no HubSpot*\n"
+        f"{'─' * 40}\n\n"
+    )
+    return header + "\n\n".join(rows)
 
 
 def _fmt_ts(ts: str) -> str:

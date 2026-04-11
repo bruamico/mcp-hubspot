@@ -66,6 +66,10 @@ _REPORT_TOOL_NAMES = {
     "productive_list_projects",
     "productive_list_time_entries",
     "productive_list_tasks",
+    # Admin / mapping
+    "slack_client_map",
+    "slack_manage_workspace",
+    "slack_map_channel",
     # Monitoring
     "monitor_client",
     # Memory — always available
