@@ -679,6 +679,18 @@ HUBSPOT_TOOL_DEFINITIONS = [
 # ---------------------------------------------------------------------------
 
 async def execute_hubspot_tool(tool_name: str, tool_input: dict) -> str:
+    """Run HubSpot tools in a thread pool to avoid blocking the asyncio event loop.
+
+    All HubSpotDirectClient methods use the synchronous hubspot-api-client / urllib
+    under the hood. Calling them directly from a coroutine would freeze the entire
+    event loop and cause health-check failures on Fly.io.
+    """
+    import asyncio
+    return await asyncio.to_thread(_execute_hubspot_sync, tool_name, tool_input)
+
+
+def _execute_hubspot_sync(tool_name: str, tool_input: dict) -> str:
+    """Synchronous implementation — called via asyncio.to_thread()."""
     try:
         hs = _hs_client()
 

@@ -156,11 +156,12 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
 
 async def _fetch_hubspot(client_key: str) -> str:
     try:
+        import asyncio
+        import json
         from ..tools.hubspot_tools import _hs_client
         hs = _hs_client()
-        # Search company by name
-        raw = hs.search_companies_by_name(client_key, limit=1)
-        import json
+        # Search company by name — run in thread to avoid blocking the event loop
+        raw = await asyncio.to_thread(hs.search_companies_by_name, client_key, 1)
         data = json.loads(raw)
         results = data.get("results", [])
         if not results:
@@ -168,8 +169,8 @@ async def _fetch_hubspot(client_key: str) -> str:
         company = results[0]
         company_id = company.get("id")
         company_name = company.get("properties", {}).get("name", client_key)
-        # Get timeline
-        timeline_raw = hs.get_company_timeline(company_id, limit=15)
+        # Get timeline — also in thread
+        timeline_raw = await asyncio.to_thread(hs.get_company_timeline, company_id, 15)
         timeline = json.loads(timeline_raw)
         engagements = timeline.get("engagements", [])
         if not engagements:

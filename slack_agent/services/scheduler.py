@@ -78,8 +78,9 @@ async def _daily_hubspot_summary() -> None:
     if not _slack_client or not _hubspot:
         return
     try:
-        contacts_raw = _hubspot.get_recent_contacts(limit=5)
-        companies_raw = _hubspot.get_recent_companies(limit=5)
+        import asyncio
+        contacts_raw = await asyncio.to_thread(_hubspot.get_recent_contacts, limit=5)
+        companies_raw = await asyncio.to_thread(_hubspot.get_recent_companies, limit=5)
 
         now_br = datetime.now(tz=timezone(timedelta(hours=-3)))
         date_str = now_br.strftime("%d/%m/%Y")
@@ -179,8 +180,9 @@ async def _check_deals_without_followup() -> None:
     if not _slack_client or not _hubspot or not _db_was_alert_sent:
         return
     try:
+        import asyncio
         # Pull recent tickets with default criteria (open / recently modified)
-        result = _hubspot.get_tickets(criteria="default", limit=20)
+        result = await asyncio.to_thread(_hubspot.get_tickets, criteria="default", limit=20)
         tickets = result.get("results", []) if isinstance(result, dict) else []
 
         stale = []

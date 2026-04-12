@@ -890,16 +890,18 @@ async def _client_map() -> str:
     ch_map = {r["client_key"]: r["channel_name"] for r in ch_rows}
 
     # Get HubSpot portal ID for building direct URLs
+    portal_id = ""
     try:
-        from ..tools.hubspot_tools import _hs_client
-        import urllib.request as _req
+        import aiohttp as _aiohttp
         token = os.getenv("HUBSPOT_ACCESS_TOKEN") or os.getenv("HUBSPOT_TOKEN", "")
-        r = _req.Request(
-            "https://api.hubapi.com/oauth/v1/access-tokens/" + token,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        with _req.urlopen(r, timeout=8) as resp:
-            portal_id = _json.loads(resp.read()).get("hub_id", "")
+        async with _aiohttp.ClientSession() as _sess:
+            async with _sess.get(
+                f"https://api.hubapi.com/oauth/v1/access-tokens/{token}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=_aiohttp.ClientTimeout(total=8),
+            ) as _resp:
+                if _resp.status == 200:
+                    portal_id = (await _resp.json()).get("hub_id", "")
     except Exception:
         portal_id = ""
 
