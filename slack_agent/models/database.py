@@ -134,6 +134,18 @@ async def init_db() -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_commitments_status ON commitments(status)"
         )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_commitments_source ON commitments(source_channel, source_ts)"
+        )
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS extraction_watermarks (
+                channel_id  TEXT NOT NULL,
+                workspace   TEXT NOT NULL DEFAULT 'internal',
+                last_ts     TEXT NOT NULL,
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (channel_id, workspace)
+            )
+        """)
 
         # Migrations: safely add columns that may be missing in older DB instances.
         # ALTER TABLE ADD COLUMN fails if the column exists — catch and ignore.
@@ -716,6 +728,38 @@ async def list_commitments(
             params,
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+async def commitment_source_exists(source_channel: str, source_ts: str) -> bool:
+    """Return True if a commitment with this exact source already exists (dedup)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM commitments WHERE source_channel = ? AND source_ts = ?",
+            (source_channel, source_ts),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def get_watermark(channel_id: str, workspace: str = "internal") -> str | None:
+    """Return the last processed Slack ts for a channel, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT last_ts FROM extraction_watermarks WHERE channel_id = ? AND workspace = ?",
+            (channel_id, workspace),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def set_watermark(channel_id: str, workspace: str, last_ts: str) -> None:
+    """Update the watermark for a channel."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO extraction_watermarks (channel_id, workspace, last_ts, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
+            (channel_id, workspace, last_ts),
+        )
+        await db.commit()
 
 
 async def get_overdue_commitments(days_old: int = 3) -> list[dict]:

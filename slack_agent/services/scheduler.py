@@ -69,6 +69,15 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
         replace_existing=True,
     )
 
+    # Automatic commitment extraction — every 60 minutes
+    scheduler.add_job(
+        _run_commitment_extraction,
+        "interval",
+        minutes=60,
+        id="commitment_extraction",
+        replace_existing=True,
+    )
+
     logger.info("Scheduler configured with %d jobs", len(scheduler.get_jobs()))
     return scheduler
 
@@ -214,6 +223,20 @@ async def _run_due_monitor_jobs() -> None:
         await run_all_monitor_jobs(_slack_client)
     except Exception as exc:
         logger.error("_run_due_monitor_jobs failed: %s", exc)
+
+
+async def _run_commitment_extraction() -> None:
+    """Run automatic commitment extraction from all Slack channels."""
+    try:
+        from .commitment_extractor import run_extraction
+        summary = await run_extraction()
+        if summary["new_commitments"] or summary["resolved_commitments"]:
+            logger.info(
+                "Commitment extraction: +%d new, %d resolved, %d errors",
+                summary["new_commitments"], summary["resolved_commitments"], summary["errors"],
+            )
+    except Exception as exc:
+        logger.error("_run_commitment_extraction failed: %s", exc)
 
 
 async def _check_deals_without_followup() -> None:
