@@ -74,7 +74,7 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
 
 
 async def _daily_hubspot_summary() -> None:
-    """Post a morning briefing with active contacts, companies and open tickets."""
+    """Post a morning briefing with active contacts, companies, open tickets and overdue commitments."""
     if not _slack_client or not _hubspot:
         return
     try:
@@ -96,6 +96,50 @@ async def _daily_hubspot_summary() -> None:
         logger.info("Daily summary posted to %s", REPORT_CHANNEL)
     except Exception as exc:
         logger.error("Daily summary failed: %s", exc)
+
+    # Overdue commitments alert — separate message so it's always visible
+    await _alert_overdue_commitments()
+
+
+async def _alert_overdue_commitments() -> None:
+    """Post an alert for commitments pending more than 3 days."""
+    if not _slack_client:
+        return
+    try:
+        from ..models.database import get_overdue_commitments
+        rows = await get_overdue_commitments(days_old=3)
+        if not rows:
+            return
+
+        # Group by client
+        by_client: dict[str, list] = {}
+        for r in rows:
+            by_client.setdefault(r["client_key"], []).append(r)
+
+        lines = [f":hourglass_flowing_sand: *{len(rows)} compromisso(s) pendente(s) há +3 dias:*\n"]
+        for ck, items in by_client.items():
+            lines.append(f"*{ck.upper()}*")
+            for c in items:
+                assigned = f" → {c['assigned_to']}" if c.get("assigned_to") else ""
+                try:
+                    from datetime import datetime as _dt2
+                    created = _dt2.fromisoformat(c["created_at"].replace("Z", "+00:00"))
+                    if created.tzinfo is None:
+                        from datetime import timezone as _tz2
+                        created = created.replace(tzinfo=_tz2.utc)
+                    days = (datetime.now(tz=timezone.utc) - created).days
+                    age = f" ({days}d)"
+                except Exception:
+                    age = ""
+                lines.append(f"  • #{c['id']} {c['description']}{assigned}{age}")
+
+        await _slack_client.chat_postMessage(
+            channel=REPORT_CHANNEL,
+            text="\n".join(lines),
+        )
+        logger.info("Overdue commitments alert posted (%d items)", len(rows))
+    except Exception as exc:
+        logger.error("_alert_overdue_commitments failed: %s", exc)
 
 
 async def _run_due_scheduled_reports() -> None:

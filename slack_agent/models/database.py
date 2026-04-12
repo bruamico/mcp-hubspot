@@ -110,6 +110,30 @@ async def init_db() -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_client ON memories(client_key)"
         )
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS commitments (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_key   TEXT NOT NULL,
+                description  TEXT NOT NULL,
+                requested_by TEXT,
+                assigned_to  TEXT,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                priority     TEXT NOT NULL DEFAULT 'normal',
+                due_date     TEXT,
+                source_channel TEXT,
+                source_ts    TEXT,
+                fulfilled_at DATETIME,
+                notes        TEXT,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_commitments_client ON commitments(client_key)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_commitments_status ON commitments(status)"
+        )
 
         # Migrations: safely add columns that may be missing in older DB instances.
         # ALTER TABLE ADD COLUMN fails if the column exists — catch and ignore.
@@ -596,3 +620,115 @@ async def save_monitoring_snapshot(client_key: str, context: str, captured_at: f
             (client_key, context, captured_at),
         )
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Commitments (task/request tracker)
+# ---------------------------------------------------------------------------
+
+async def add_commitment(
+    client_key: str,
+    description: str,
+    requested_by: str = "",
+    assigned_to: str = "",
+    priority: str = "normal",
+    due_date: str = "",
+    source_channel: str = "",
+    source_ts: str = "",
+) -> int:
+    """Create a new commitment. Returns the new row id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO commitments
+               (client_key, description, requested_by, assigned_to, priority,
+                due_date, source_channel, source_ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (client_key.lower().strip(), description.strip(),
+             requested_by.strip(), assigned_to.strip(), priority.lower().strip(),
+             due_date.strip(), source_channel.strip(), source_ts.strip()),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def update_commitment(
+    commitment_id: int,
+    status: str | None = None,
+    notes: str | None = None,
+    assigned_to: str | None = None,
+    due_date: str | None = None,
+) -> bool:
+    """Update fields on a commitment. Returns True if found."""
+    fields, params = [], []
+    if status is not None:
+        fields.append("status = ?")
+        params.append(status)
+        if status == "done":
+            fields.append("fulfilled_at = CURRENT_TIMESTAMP")
+    if notes is not None:
+        fields.append("notes = ?")
+        params.append(notes)
+    if assigned_to is not None:
+        fields.append("assigned_to = ?")
+        params.append(assigned_to)
+    if due_date is not None:
+        fields.append("due_date = ?")
+        params.append(due_date)
+    if not fields:
+        return False
+    fields.append("updated_at = CURRENT_TIMESTAMP")
+    params.append(commitment_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            f"UPDATE commitments SET {', '.join(fields)} WHERE id = ?", params
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def list_commitments(
+    client_key: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List commitments filtered by client and/or status."""
+    conditions, params = [], []
+    if client_key:
+        conditions.append("client_key = ?")
+        params.append(client_key.lower().strip())
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(limit)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""SELECT id, client_key, description, requested_by, assigned_to,
+                       status, priority, due_date, source_channel, notes,
+                       fulfilled_at, created_at, updated_at
+                FROM commitments {where}
+                ORDER BY
+                    CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                                  WHEN 'normal' THEN 2 ELSE 3 END,
+                    created_at ASC
+                LIMIT ?""",
+            params,
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_overdue_commitments(days_old: int = 3) -> list[dict]:
+    """Return pending commitments older than N days."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT id, client_key, description, requested_by, assigned_to,
+                      priority, due_date, created_at
+               FROM commitments
+               WHERE status = 'pending'
+                 AND created_at <= datetime('now', ? || ' days')
+               ORDER BY client_key, created_at ASC""",
+            (f"-{days_old}",),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]

@@ -10,6 +10,7 @@ from typing import Any
 
 import anthropic
 
+from .tools.commitment_tools import COMMITMENT_TOOL_DEFINITIONS, execute_commitment_tool
 from .tools.gcal_tools import GCAL_TOOL_DEFINITIONS, execute_gcal_tool
 from .tools.gmail_tools import GMAIL_TOOL_DEFINITIONS, execute_gmail_tool
 from .tools.granola_tools import GRANOLA_TOOL_DEFINITIONS, execute_granola_tool
@@ -28,7 +29,8 @@ MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "15"))
 MAX_TOOL_RESULT_CHARS = int(os.getenv("AGENT_MAX_TOOL_RESULT_CHARS", "4000"))
 
 ALL_TOOL_DEFINITIONS = (
-    GCAL_TOOL_DEFINITIONS
+    COMMITMENT_TOOL_DEFINITIONS
+    + GCAL_TOOL_DEFINITIONS
     + GMAIL_TOOL_DEFINITIONS
     + GRANOLA_TOOL_DEFINITIONS
     + HUBSPOT_TOOL_DEFINITIONS
@@ -77,6 +79,12 @@ _REPORT_TOOL_NAMES = {
     "memory_save",
     "memory_list_topics",
     "memory_delete",
+    # Commitments
+    "commitment_add",
+    "commitment_list",
+    "commitment_done",
+    "commitment_update",
+    "commitment_overdue",
 }
 
 _REPORT_KEYWORDS = {
@@ -125,7 +133,11 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> str:
 
     gmail_names = {t["name"] for t in GMAIL_TOOL_DEFINITIONS}
 
-    if tool_name in gcal_names:
+    commitment_names = {t["name"] for t in COMMITMENT_TOOL_DEFINITIONS}
+
+    if tool_name in commitment_names:
+        return await execute_commitment_tool(tool_name, tool_input)
+    elif tool_name in gcal_names:
         return await execute_gcal_tool(tool_name, tool_input)
     elif tool_name in gmail_names:
         return await execute_gmail_tool(tool_name, tool_input)

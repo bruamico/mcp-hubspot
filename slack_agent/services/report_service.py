@@ -289,17 +289,56 @@ async def _fetch_memories(client_key: str) -> str:
         return f"(erro memória: {exc})"
 
 
+async def _fetch_commitments(client_key: str) -> str:
+    try:
+        from ..models.database import list_commitments
+        pending = await list_commitments(client_key=client_key, status="pending", limit=20)
+        recent_done = await list_commitments(client_key=client_key, status="done", limit=5)
+
+        parts = []
+        if pending:
+            from datetime import datetime, timezone
+            lines = []
+            for c in pending:
+                age = ""
+                try:
+                    created = datetime.fromisoformat(c["created_at"].replace("Z", "+00:00"))
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    days = (datetime.now(tz=timezone.utc) - created).days
+                    age = f" ({days}d pendente)"
+                except Exception:
+                    pass
+                assigned = f" → {c['assigned_to']}" if c.get("assigned_to") else ""
+                due = f" | prazo: {c['due_date']}" if c.get("due_date") else ""
+                prio = f"[{c.get('priority','normal')}] " if c.get("priority") != "normal" else ""
+                lines.append(f"• #{c['id']} {prio}{c['description']}{assigned}{due}{age}")
+            parts.append("PENDENTES:\n" + "\n".join(lines))
+
+        if recent_done:
+            lines = []
+            for c in recent_done:
+                date = (c.get("fulfilled_at") or c.get("updated_at") or "")[:10]
+                lines.append(f"• #{c['id']} ✅ {c['description']} ({date})")
+            parts.append("ENTREGUES RECENTEMENTE:\n" + "\n".join(lines))
+
+        return "\n\n".join(parts) if parts else "Nenhum compromisso registrado."
+    except Exception as exc:
+        return f"(erro commitments: {exc})"
+
+
 # ---------------------------------------------------------------------------
 # Per-client parallel fetch
 # ---------------------------------------------------------------------------
 
 async def fetch_client_data(client_key: str, hours_back: int) -> dict:
     """Fetch per-client data sources concurrently (internal Slack is fetched globally)."""
-    external, readai, hubspot, memories = await asyncio.gather(
+    external, readai, hubspot, memories, commitments = await asyncio.gather(
         _fetch_external_slack(client_key, hours_back),
         _fetch_readai(client_key, hours_back),
         _fetch_hubspot(client_key),
         _fetch_memories(client_key),
+        _fetch_commitments(client_key),
         return_exceptions=True,
     )
     def _safe(v):
@@ -311,6 +350,7 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
         "readai": _safe(readai),
         "hubspot": _safe(hubspot),
         "memories": _safe(memories),
+        "commitments": _safe(commitments),
     }
 
 
@@ -328,8 +368,10 @@ _REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Gere um 
 [N] clientes com atividade
 
 🔴 *ClienteX* — [o que foi discutido/reportado + quem precisa agir + o quê]
+⏳ Pendente (Nd): "descrição do pedido" → @Responsável
 🟠 *ClienteY* — [decisão pendente, combinado a confirmar, problema relatado]
 🟡 *ClienteZ* — [reunião realizada / próximo passo claro / atividade saudável]
+✅ Entregue: "o que foi entregue" (data)
 ⚪ *ClienteW* — Sem atividade no período.
 
 📅 *Resumo Semanal — DD/MM → DD/MM* (só se hours_back ≥ 72h)
@@ -345,6 +387,8 @@ Para a próxima semana:
 **Slack externo (workspace do cliente):** o que o cliente está comunicando — pedidos, problemas reportados, perguntas, feedbacks, decisões conjuntas.
 **Read.ai:** resumo de reuniões — o que foi decidido, action items, próximos passos.
 **HubSpot:** engajamentos recentes — emails, calls, notas — contexto de relacionamento.
+
+**Compromissos rastreados:** lista de pedidos/entregas registrados explicitamente. Mostre pendentes com ⏳ (incluindo quantos dias estão abertos) e entregues recentemente com ✅. Se houver pendente crítico/high há mais de 3 dias, eleve a prioridade do cliente para 🔴.
 
 **NÃO use:** tempo de resposta, minutos/horas sem retorno, contagem de mensagens. Isso não é relevante aqui.
 
@@ -440,6 +484,9 @@ async def generate_report(
         key = data["key"]
         context_parts.append(f"""
 === DADOS DO CLIENTE: {key.upper()} ===
+
+[COMPROMISSOS / PEDIDOS RASTREADOS]
+{data['commitments'][:1500]}
 
 [MEMÓRIA PERSISTENTE]
 {data['memories'][:_memories_limit]}
