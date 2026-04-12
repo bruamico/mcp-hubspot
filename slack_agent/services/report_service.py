@@ -69,11 +69,15 @@ async def _fetch_all_internal_slack(hours_back: int) -> str:
                 text = text.replace(f"<@{uid}>", f"@{name}")
             return text
 
+        # Scale message limit with the time window so longer queries don't miss activity.
+        # ~8 messages per day per channel is a reasonable baseline.
+        per_channel_limit = max(20, min(200, hours_back // 3))
+
         async def _read(ch: dict) -> str | None:
             async with sem:
                 try:
                     hist = await sc.conversations_history(
-                        channel=ch["id"], limit=12, oldest=oldest
+                        channel=ch["id"], limit=per_channel_limit, oldest=oldest
                     )
                     msgs = [
                         m for m in hist.get("messages", [])
@@ -86,8 +90,7 @@ async def _fetch_all_internal_slack(hours_back: int) -> str:
                         raw = m.get("text", "").strip()
                         if not raw:
                             continue
-                        text = (await _resolve_mentions(raw))[:220]
-                        # Resolve sender name
+                        text = (await _resolve_mentions(raw))[:400]
                         sender = ""
                         if m.get("user"):
                             sender = await _resolve_user(m["user"]) + ": "
@@ -112,7 +115,9 @@ async def _fetch_all_internal_slack(hours_back: int) -> str:
 async def _fetch_external_slack(client_key: str, hours_back: int) -> str:
     try:
         from ..tools.slack_tools import _get_client_overview
-        result = await _get_client_overview(client_key, hours_back=hours_back, limit_per_channel=15, exclude_bots=True)
+        # Scale per-channel limit with the time window so longer queries don't miss activity.
+        limit = max(20, min(150, hours_back // 2))
+        result = await _get_client_overview(client_key, hours_back=hours_back, limit_per_channel=limit, exclude_bots=True)
         if "não encontrado" in result:
             return f"⚠️ERRO: workspace '{client_key}' não configurado no WORKSPACES_JSON."
         return result
@@ -401,36 +406,52 @@ async def generate_report(
         internal_slack_task, client_data_list_task
     )
 
-    # Build context for Claude
+    # Build context for Claude — all limits scale with the time window so longer
+    # queries don't silently drop activity from earlier in the period.
     import datetime
     now_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    # Per-field context budgets that grow with hours_back.
+    # At 24h the values match the original conservative defaults.
+    # At 168h (week) they are ~7x larger so the full week fits.
+    _internal_limit  = min(max(6_000,  hours_back * 80),  60_000)
+    _external_limit  = min(max(2_000,  hours_back * 40),  20_000)
+    _readai_limit    = min(max(1_000,  hours_back * 15),   8_000)
+    _hubspot_limit   = min(max(600,    hours_back * 10),   4_000)
+    _memories_limit  = min(max(600,    hours_back *  5),   3_000)
+
     context_parts = [
         f"Período: últimas {hours_back}h | Gerado em: {now_str}\n",
         f"Clientes analisados: {', '.join(client_keys)}\n\n",
         f"=== SLACK INTERNO TROPICAL HUB (TODOS OS CANAIS COM ATIVIDADE) ===\n"
         f"Use estes dados para a seção 💬 Comunicação de cada cliente — associe pelo nome do canal, "
         f"menções de empresa, ou contexto das mensagens.\n\n"
-        f"{internal_slack_all[:6000]}\n\n",
+        f"{internal_slack_all[:_internal_limit]}\n\n",
     ]
 
     for data in client_data_list:
         if isinstance(data, Exception):
+            # Don't silently skip — tell Claude this client had a fetch error
+            context_parts.append(
+                f"\n=== DADOS DO CLIENTE: (ERRO AO CARREGAR) ===\n"
+                f"Erro: {data}\n\n"
+            )
             continue
         key = data["key"]
         context_parts.append(f"""
 === DADOS DO CLIENTE: {key.upper()} ===
 
 [MEMÓRIA PERSISTENTE]
-{data['memories'][:600]}
+{data['memories'][:_memories_limit]}
 
 [SLACK EXTERNO - workspace {key}]
-{data['external_slack'][:2000]}
+{data['external_slack'][:_external_limit]}
 
 [READ.AI - reuniões]
-{data['readai'][:1000]}
+{data['readai'][:_readai_limit]}
 
 [HUBSPOT TIMELINE]
-{data['hubspot'][:600]}
+{data['hubspot'][:_hubspot_limit]}
 
 """)
 
@@ -481,8 +502,13 @@ def extract_hours_back(text: str, default: int = 48) -> int:
         return 24
     if "ontem" in tl:
         return 48
+    # "semana passada" → full previous 7-day week (up to ~200h to be safe)
+    if "semana passada" in tl or "última semana" in tl or "ultima semana" in tl:
+        return 200
     if "semana" in tl:
         return 168
+    if "mês passado" in tl or "mes passado" in tl or "último mês" in tl or "ultimo mes" in tl:
+        return 744  # ~31 days
     return default
 
 
