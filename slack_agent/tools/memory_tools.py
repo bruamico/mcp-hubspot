@@ -9,13 +9,18 @@ Rooms  → topic:      'decisões', 'preferências', 'acionáveis', 'contexto', 
 """
 import logging
 
-import numpy as np
-
 from ..models.database import (
     save_memory, recall_memories, fetch_memories_with_embeddings,
     list_memory_topics, delete_memory,
 )
 from ..services.embeddings import embed, is_available
+
+try:
+    import numpy as np
+    _NP = True
+except ImportError:
+    np = None  # type: ignore
+    _NP = False
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +157,7 @@ async def _recall(tool_input: dict) -> str:
     query = tool_input.get("query")
     limit = int(tool_input.get("limit", 10))
 
-    if query and is_available():
+    if query and is_available() and _NP:
         rows = await _semantic_recall(client_key, topic, query, limit)
         search_mode = "semântica"
     else:
@@ -209,12 +214,12 @@ async def _semantic_recall(
     # For memories without embeddings: include if LIKE match, score 0.5
     # For memories with embeddings: score = cosine similarity
     query_lower = query.lower()
-    q_vec = np.frombuffer(query_emb, dtype=np.float32)
+    q_vec = np.frombuffer(query_emb, dtype=np.float32)  # type: ignore[union-attr]
     scored: list[tuple[float, dict]] = []
     for row in candidates:
         emb = row.get("embedding")
         if emb:
-            score = float(np.dot(q_vec, np.frombuffer(emb, dtype=np.float32)))
+            score = float(np.dot(q_vec, np.frombuffer(emb, dtype=np.float32)))  # type: ignore[union-attr]
         elif query_lower in (row.get("content") or "").lower():
             score = 0.5  # keyword match in legacy memory without embedding
         else:

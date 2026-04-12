@@ -84,6 +84,7 @@ _REPORT_KEYWORDS = {
     "report", "resumo", "resumos", "panorama",
     "overview", "hoje", "semana", "clientes", "cliente",
     "pendências", "pendencias", "acionáveis", "acionaveis",
+    "mapa", "mapeamento", "workspace", "workspaces",
 }
 
 

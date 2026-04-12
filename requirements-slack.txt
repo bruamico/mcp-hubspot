@@ -25,3 +25,7 @@ hubspot-api-client>=11.1.0
 
 # Env
 python-dotenv>=1.0.1
+
+# Semantic memory (numpy only — sentence-transformers not needed in Slack agent;
+# embedding generation falls back gracefully when model is unavailable)
+numpy>=1.24.0

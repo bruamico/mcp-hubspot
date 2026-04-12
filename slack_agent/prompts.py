@@ -135,6 +135,7 @@ Quando solicitado um relatório, use este formato compacto:
 - `liste os monitoramentos ativos` → lista jobs de delta
 - `remova o monitoramento ID 2` → desativa job
 - `há mensagens sem resposta?` → verifica todos os workspaces externos
+- `mapa de clientes` / `mapeamento` / `verifique os clientes` → chame `slack_client_map` para mostrar a tabela de alinhamento workspace ↔ canal interno ↔ empresa HubSpot
 
 ## Diferença: relatório agendado vs. monitoramento de delta
 - **`schedule_report`**: gera e posta relatório completo a cada N minutos — sempre, mesmo sem novidade
