@@ -80,13 +80,36 @@ async def _process_message(event: dict, say, client) -> None:
 
         if is_report_request(user_message) and not _wants_calendar_filter:
             # Fast path: pre-fetch all data in parallel, single Claude synthesis call
-            from .tools.slack_tools import _get_workspaces
+            from .tools.slack_tools import _get_workspaces, _get_tropical_channels
+            from slack_sdk.web.async_client import AsyncWebClient as _ASC
+
             ws = await _get_workspaces()
-            # CLIENT_LIST env var allows listing clients that don't have an external
-            # Slack workspace — they still get HubSpot + internal Slack coverage.
-            _client_list_env = os.getenv("CLIENT_LIST", "")
-            _extra = [c.strip() for c in _client_list_env.split(",") if c.strip()]
-            all_clients = list(dict.fromkeys(list(ws.keys()) + _extra))  # preserves order, dedupes
+
+            # Supplement WORKSPACES_JSON with internal Slack channel names so that
+            # clients without an external workspace (e.g. "ativa") still appear.
+            # We skip generic/internal channels that are not client names.
+            _SKIP = {
+                "geral", "general", "random", "aleatorio", "equipe", "time", "team",
+                "dev", "developers", "bot-alertas", "bot-testes", "bot-logs",
+                "announcements", "marketing", "vendas", "financeiro", "rh", "people",
+                "ops", "operacoes", "internal", "bots",
+            }
+            try:
+                _sc = _ASC(token=os.getenv("TROPICAL_BOT_TOKEN", ""))
+                _channels = await _get_tropical_channels(_sc)
+                _ch_names = [
+                    ch["name"] for ch in _channels
+                    if ch["name"] not in _SKIP and not ch["name"].startswith("_")
+                ]
+            except Exception:
+                _ch_names = []
+
+            # Preserve WORKSPACES_JSON order, append any channel-only clients at end
+            all_clients = list(dict.fromkeys(list(ws.keys()) + _ch_names))
+            # CLIENT_LIST env var can further extend the list if needed
+            _extra = [c.strip() for c in os.getenv("CLIENT_LIST", "").split(",") if c.strip()]
+            all_clients = list(dict.fromkeys(all_clients + _extra))
+
             specific = extract_client(user_message, all_clients)
             clients = [specific] if specific else all_clients
             hours_back = extract_hours_back(user_message, default=48)
