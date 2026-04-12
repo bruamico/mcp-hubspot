@@ -82,7 +82,11 @@ async def _process_message(event: dict, say, client) -> None:
             # Fast path: pre-fetch all data in parallel, single Claude synthesis call
             from .tools.slack_tools import _get_workspaces
             ws = await _get_workspaces()
-            all_clients = list(ws.keys())
+            # CLIENT_LIST env var allows listing clients that don't have an external
+            # Slack workspace — they still get HubSpot + internal Slack coverage.
+            _client_list_env = os.getenv("CLIENT_LIST", "")
+            _extra = [c.strip() for c in _client_list_env.split(",") if c.strip()]
+            all_clients = list(dict.fromkeys(list(ws.keys()) + _extra))  # preserves order, dedupes
             specific = extract_client(user_message, all_clients)
             clients = [specific] if specific else all_clients
             hours_back = extract_hours_back(user_message, default=48)
