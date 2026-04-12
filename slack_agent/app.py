@@ -135,11 +135,36 @@ async def build_webhook_app() -> web.Application:
     aio_app = web.Application()
     aio_app.router.add_post("/webhook/readai", handle_readai_webhook)
     aio_app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    aio_app.router.add_get("/status", _status_handler)
     aio_app.router.add_get("/oauth/granola", _granola_oauth_start)
     aio_app.router.add_get("/oauth/granola/callback", _granola_oauth_callback)
     aio_app.router.add_get("/oauth/google", _google_oauth_start)
     aio_app.router.add_get("/oauth/google/callback", _google_oauth_callback)
     return aio_app
+
+
+async def _status_handler(request: web.Request) -> web.Response:
+    """Returns a JSON status blob — useful for verifying the running instance."""
+    import json as _json
+    import subprocess as _sp
+    try:
+        git_sha = _sp.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+    except Exception:
+        git_sha = "unknown"
+    status = {
+        "status": "ok",
+        "git_sha": git_sha,
+        "model": os.getenv("CLAUDE_MODEL", "?"),
+        "db_path": os.getenv("DB_PATH", "?"),
+        "report_channel": os.getenv("SLACK_REPORT_CHANNEL", "?"),
+        "hub_token_set": bool(os.getenv("HUBSPOT_ACCESS_TOKEN") or os.getenv("HUBSPOT_TOKEN")),
+        "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "redis_url_set": bool(os.getenv("REDIS_URL")),
+    }
+    return web.Response(
+        text=_json.dumps(status, indent=2),
+        content_type="application/json",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -329,39 +354,71 @@ h1{color:#4ade80;} p{color:#aaa;}</style></head>
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
-    logger.info("Initializing database…")
-    await init_db()
-    n = await reprocess_raw_payloads()
-    if n:
-        logger.info("Re-processed %d Read.ai records with missing fields", n)
+    # ── Step 1: Database ──────────────────────────────────────────────────
+    logger.info("Step 1/5 — Initializing database at %s", os.getenv("DB_PATH", "/app/data/tropical_bot.db"))
+    try:
+        await init_db()
+        n = await reprocess_raw_payloads()
+        if n:
+            logger.info("Re-processed %d Read.ai records with missing fields", n)
+        logger.info("Database OK")
+    except Exception as exc:
+        logger.critical("Database init FAILED: %s", exc, exc_info=True)
+        raise
 
-    logger.info("Starting Slack Socket Mode handler…")
-    socket_handler = AsyncSocketModeHandler(
-        slack_app, os.environ["TROPICAL_APP_TOKEN"]
-    )
+    # ── Step 2: Slack Socket Mode handler ────────────────────────────────
+    logger.info("Step 2/5 — Creating Slack Socket Mode handler")
+    try:
+        socket_handler = AsyncSocketModeHandler(
+            slack_app, os.environ["TROPICAL_APP_TOKEN"]
+        )
+        logger.info("Socket Mode handler created OK")
+    except Exception as exc:
+        logger.critical("Socket Mode handler FAILED: %s", exc, exc_info=True)
+        raise
 
-    # Set up proactive scheduler
-    from .models.database import was_alert_sent, mark_alert_sent
-    from .services.scheduler import init_scheduler
-    scheduler = init_scheduler(
-        slack_client=slack_app.client,
-        hubspot_client=_lazy_hubspot(),
-        was_alert_sent_fn=was_alert_sent,
-        mark_alert_sent_fn=mark_alert_sent,
-    )
-    scheduler.start()
-    logger.info("Scheduler started")
+    # ── Step 3: Scheduler ────────────────────────────────────────────────
+    logger.info("Step 3/5 — Starting scheduler")
+    try:
+        from .models.database import was_alert_sent, mark_alert_sent
+        from .services.scheduler import init_scheduler
+        scheduler = init_scheduler(
+            slack_client=slack_app.client,
+            hubspot_client=_lazy_hubspot(),
+            was_alert_sent_fn=was_alert_sent,
+            mark_alert_sent_fn=mark_alert_sent,
+        )
+        scheduler.start()
+        logger.info("Scheduler started OK (%d jobs)", len(scheduler.get_jobs()))
+    except Exception as exc:
+        logger.critical("Scheduler FAILED: %s", exc, exc_info=True)
+        raise
 
-    # aiohttp webhook server
-    webhook_port = int(os.getenv("PORT_WEBHOOK", "8080"))
-    webhook_app = await build_webhook_app()
-    runner = web.AppRunner(webhook_app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", webhook_port)
-    await site.start()
-    logger.info("Webhook server listening on port %d", webhook_port)
+    # ── Step 4: aiohttp webhook server ───────────────────────────────────
+    logger.info("Step 4/5 — Starting webhook server")
+    try:
+        webhook_port = int(os.getenv("PORT_WEBHOOK", "8080"))
+        webhook_app = await build_webhook_app()
+        runner = web.AppRunner(webhook_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", webhook_port)
+        await site.start()
+        logger.info("Webhook server listening on port %d OK", webhook_port)
+    except Exception as exc:
+        logger.critical("Webhook server FAILED: %s", exc, exc_info=True)
+        raise
 
-    # Start Slack socket mode (blocks)
+    # ── Step 5: Connect to Slack ─────────────────────────────────────────
+    logger.info("Step 5/5 — Connecting to Slack Socket Mode (this blocks until shutdown)")
+    try:
+        report_channel = os.getenv("SLACK_REPORT_CHANNEL", "#geral")
+        await slack_app.client.chat_postMessage(
+            channel=report_channel,
+            text=":white_check_mark: *Tropical Bot reiniciado* — todas as integrações carregadas. Pronto para uso.",
+        )
+    except Exception:
+        pass  # startup ping is best-effort; don't abort if it fails
+
     await socket_handler.start_async()
 
 
