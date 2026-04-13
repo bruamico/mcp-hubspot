@@ -132,13 +132,41 @@ async def _process_channel(
     if not msgs:
         return 0, 0
 
-    # Build text block for Claude
+    # Resolve user IDs to display names so Claude sees real names, not @UXXX
+    _user_cache: dict[str, str] = {}
+
+    async def _resolve_user(uid: str) -> str:
+        if uid not in _user_cache:
+            try:
+                info = await sc.users_info(user=uid)
+                u = info.get("user", {})
+                _user_cache[uid] = (
+                    u.get("profile", {}).get("display_name")
+                    or u.get("real_name")
+                    or u.get("name")
+                    or uid
+                )
+            except Exception:
+                _user_cache[uid] = uid
+        return _user_cache[uid]
+
+    import re as _re
+
+    async def _resolve_text(text: str) -> str:
+        for uid in set(_re.findall(r"<@([A-Z0-9]+)>", text)):
+            name = await _resolve_user(uid)
+            text = text.replace(f"<@{uid}>", f"@{name}")
+        return text
+
+    # Build text block for Claude with resolved names
     lines = []
     for m in reversed(msgs):
         ts = m.get("ts", "")
-        user = m.get("user", m.get("username", "?"))
-        text = m.get("text", "").replace("\n", " ")[:300]
-        lines.append(f"[{ts}] {user}: {text}")
+        uid = m.get("user", "")
+        sender = (await _resolve_user(uid)) if uid else m.get("username", "?")
+        raw_text = m.get("text", "").replace("\n", " ")[:300]
+        text = await _resolve_text(raw_text)
+        lines.append(f"[{ts}] {sender}: {text}")
     messages_text = "\n".join(lines)
 
     # Update watermark to highest ts seen
@@ -157,6 +185,17 @@ async def _process_channel(
         if ts and await commitment_source_exists(source_ch, ts):
             continue  # already extracted from this exact message
 
+        # Use message timestamp as created_at so age reflects the original Slack date
+        msg_created_at = None
+        if ts:
+            try:
+                import datetime as _dt
+                msg_created_at = _dt.datetime.fromtimestamp(
+                    float(ts), tz=_dt.timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
         cid = await add_commitment(
             client_key=client_key,
             description=c.get("description", "")[:500],
@@ -165,6 +204,7 @@ async def _process_channel(
             priority=c.get("priority", "normal"),
             source_channel=source_ch,
             source_ts=ts,
+            msg_created_at=msg_created_at,
         )
         logger.info("Auto-extracted commitment #%d for %s: %s", cid, client_key, c.get("description", "")[:80])
         new_count += 1

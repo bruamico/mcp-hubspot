@@ -647,18 +647,35 @@ async def add_commitment(
     due_date: str = "",
     source_channel: str = "",
     source_ts: str = "",
+    msg_created_at: str | None = None,
 ) -> int:
-    """Create a new commitment. Returns the new row id."""
+    """Create a new commitment. Returns the new row id.
+
+    Pass msg_created_at (ISO datetime string) to backdate the created_at field
+    to the original Slack message timestamp so age calculations are accurate.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """INSERT INTO commitments
-               (client_key, description, requested_by, assigned_to, priority,
-                due_date, source_channel, source_ts)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (client_key.lower().strip(), description.strip(),
-             requested_by.strip(), assigned_to.strip(), priority.lower().strip(),
-             due_date.strip(), source_channel.strip(), source_ts.strip()),
-        )
+        if msg_created_at:
+            cur = await db.execute(
+                """INSERT INTO commitments
+                   (client_key, description, requested_by, assigned_to, priority,
+                    due_date, source_channel, source_ts, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (client_key.lower().strip(), description.strip(),
+                 requested_by.strip(), assigned_to.strip(), priority.lower().strip(),
+                 due_date.strip(), source_channel.strip(), source_ts.strip(),
+                 msg_created_at, msg_created_at),
+            )
+        else:
+            cur = await db.execute(
+                """INSERT INTO commitments
+                   (client_key, description, requested_by, assigned_to, priority,
+                    due_date, source_channel, source_ts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (client_key.lower().strip(), description.strip(),
+                 requested_by.strip(), assigned_to.strip(), priority.lower().strip(),
+                 due_date.strip(), source_channel.strip(), source_ts.strip()),
+            )
         await db.commit()
         return cur.lastrowid
 
