@@ -73,23 +73,19 @@ Ao trabalhar com um **lead ou contato novo**:
 
 ## FORMATO DO RELATÓRIO DE CLIENTE
 
-Quando solicitado um relatório, use este formato compacto:
+Formatação obrigatória — Slack nativo:
+• *negrito*, _itálico_, `código`, • para listas
+• PROIBIDO: tabelas (|col|), cabeçalhos ## ou ###, linhas ---
+• Compacto: sem linhas em branco duplas, sem espaçamento excessivo
 
-```
-━━ 🏢 [NOME DO CLIENTE] ━━━━━━━━━━━━━━━━━━━
+Formato por cliente:
 
-💬 *Comunicação*
-[2-4 linhas consolidando Slack interno + externo + reuniões. Foque no conteúdo: o que foi discutido, decidido, combinado. Sem contagem de mensagens ou tempo de espera.]
+🔴/🟠/🟡/⚪ *NomeCliente* — [o que aconteceu em 1-2 frases]
+⏳ _"pedido pendente"_ → @Responsável (Nd) ← só se houver
+✅ _"o que foi entregue"_ ← só se houver
 
-📋 *CRM & Projetos*
-[1-3 linhas: destaques de HubSpot + Productive. Só o que mudou ou é relevante.]
-
-✅ *Para fazer*
-• [acionável com dono, se conhecido]
-
-⚠️ *Atenção* (omita se não houver nada crítico)
-• [apenas alertas reais: cliente sem resposta há mais de 24h, prazo vencido]
-```
+✅ *Para fazer:*
+• [ação] — @Dono
 
 ---
 

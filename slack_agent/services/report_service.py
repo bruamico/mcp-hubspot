@@ -358,73 +358,55 @@ async def fetch_client_data(client_key: str, hours_back: int) -> dict:
 # Report synthesis (single Claude call)
 # ---------------------------------------------------------------------------
 
-_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Gere um briefing diário focado em conversas, combinados e próximos passos — não em métricas de tempo de resposta.
+_REPORT_SYNTHESIS_PROMPT = """Você é o assistente da equipe Tropical. Gere um briefing focado em conversas, combinados e próximos passos.
 
----
+FORMATAÇÃO — REGRAS OBRIGATÓRIAS:
+• Use APENAS formatação nativa do Slack: *negrito*, _itálico_, `código`, • para listas
+• PROIBIDO: tabelas Markdown (|col|), cabeçalhos ## ou ###, linhas ---
+• Separe clientes com uma linha vazia simples — sem traços, sem asteriscos repetidos
+• Máximo 2 linhas de conteúdo por cliente (⏳/✅ são linhas extras curtas, permitidas)
+• Output compacto — sem espaçamento duplo entre itens
 
-## FORMATO DE SAÍDA
+FORMATO DE SAÍDA:
 
-📊 *Briefing [Diário/Semanal] — [Dia, DD/MM/AAAA]*
-[N] clientes com atividade
+📊 *Briefing [Diário/Semanal] — DD/MM/AAAA* — [N] clientes com atividade
 
-🔴 *ClienteX* — [o que foi discutido/reportado + quem precisa agir + o quê]
-⏳ Pendente (Nd): "descrição do pedido" → @Responsável
-🟠 *ClienteY* — [decisão pendente, combinado a confirmar, problema relatado]
-🟡 *ClienteZ* — [reunião realizada / próximo passo claro / atividade saudável]
-✅ Entregue: "o que foi entregue" (data)
+🔴 *ClienteX* — [o que foi discutido + quem precisa agir + o quê]
+⏳ _"pedido pendente"_ → @Responsável (Nd)
+
+🟠 *ClienteY* — [decisão pendente ou combinado a confirmar]
+
+🟡 *ClienteZ* — [reunião feita / próximo passo definido]
+✅ _"o que foi entregue"_
+
 ⚪ *ClienteW* — Sem atividade no período.
 
-📅 *Resumo Semanal — DD/MM → DD/MM* (só se hours_back ≥ 72h)
-• [principais acontecimentos da semana]
-Para a próxima semana:
-• [ações prioritárias]
+✅ *Para fazer:*
+• [ação concreta] — @Dono
 
----
+FONTES E O QUE EXTRAIR:
+• *Slack interno (Tropical Hub):* discussões e combinados internos da equipe
+• *Slack externo (workspace do cliente):* pedidos, problemas e feedbacks do cliente
+• *Read.ai:* decisões e action items de reuniões
+• *HubSpot:* emails, calls, notas de relacionamento
+• *Compromissos rastreados:* mostre ⏳ pendentes (com dias em aberto) e ✅ entregues recentes; pendente critical/high há +3 dias → eleva o cliente para 🔴
+• Fonte com "⚠️ERRO" → escreva _(fonte indisponível)_ — nunca trate como "sem atividade"
 
-## FONTES E O QUE EXTRAIR DE CADA UMA
+CRITÉRIOS DE PRIORIDADE:
+🔴 Bloqueio, erro crítico, problema sem resolução visível
+🟠 Decisão ou insumo pendente, prazo próximo
+🟡 Atividade normal, alinhamento feito, próximo passo claro
+⚪ Sem atividade
 
-**Slack interno (Tropical Hub):** o que a equipe Tropical está discutindo sobre o cliente — decisões internas, alinhamentos, combinados entre membros da equipe.
-**Slack externo (workspace do cliente):** o que o cliente está comunicando — pedidos, problemas reportados, perguntas, feedbacks, decisões conjuntas.
-**Read.ai:** resumo de reuniões — o que foi decidido, action items, próximos passos.
-**HubSpot:** engajamentos recentes — emails, calls, notas — contexto de relacionamento.
+COMO USAR O SLACK INTERNO TROPICAL HUB:
+Dados chegam como dump global de todos os canais. Associe cada canal ao cliente pelo nome do canal, menções ao nome da empresa, ou contexto. Se não conseguir associar com confiança, omita — não invente.
 
-**Compromissos rastreados:** lista de pedidos/entregas registrados explicitamente. Mostre pendentes com ⏳ (incluindo quantos dias estão abertos) e entregues recentemente com ✅. Se houver pendente crítico/high há mais de 3 dias, eleve a prioridade do cliente para 🔴.
-
-**NÃO use:** tempo de resposta, minutos/horas sem retorno, contagem de mensagens. Isso não é relevante aqui.
-
----
-
-## CRITÉRIOS DE PRIORIDADE
-
-🔴 Problema crítico reportado pelo cliente sem resolução visível, bloqueio de operação, erro sistêmico impactando múltiplos itens
-🟠 Combinado ou decisão pendente de confirmação, insumo que o cliente precisa enviar, prazo próximo mencionado na conversa
-🟡 Reunião realizada com decisão clara, alinhamento feito, próximo passo definido, atividade normal em andamento
-⚪ Sem atividade relevante no período
-
----
-
-## COMO USAR O SLACK INTERNO TROPICAL HUB
-
-Dados chegam como dump global de todos os canais. Associe cada canal ao cliente pelo:
-1. Nome do canal = chave do cliente (ex: `#galena` → Galena)
-2. Nome contém parte da chave (ex: `#projeto-galena` → Galena)
-3. Menção explícita ao nome da empresa nas mensagens
-4. Contexto das mensagens
-
-Se não conseguir associar com confiança, omita — não invente.
-
----
-
-## REGRAS
-
-- Ordene do mais crítico (🔴) ao menos (⚪)
-- Máximo 2 linhas por cliente em 🔴/🟠/🟡; 1 linha para ⚪
-- Mencione @NomeSobrenome quando o Slack indicar quem deve agir (ex: @Felipe Castanheira, @Gabriela Oliveira)
-- Use [MEMÓRIA PERSISTENTE] para enriquecer com contexto de sessões anteriores
-- CRÍTICO: fonte com "⚠️ERRO" → escreva `_(fonte indisponível: motivo)_` — nunca interprete como "sem atividade"
-- Nunca invente — só o que está nos dados
+REGRAS FINAIS:
+• Ordene do mais crítico (🔴) ao menos (⚪)
+• @NomeSobrenome quando o Slack indicar quem deve agir
+• Para relatório semanal (hours_back ≥ 72h): adicione ao final um bloco *Para a semana:* com bullets das ações prioritárias — sem tabela
+• Nunca invente — só o que está nos dados
 """
-
 
 async def generate_report(
     client_keys: list[str],
