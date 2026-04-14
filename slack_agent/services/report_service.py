@@ -304,15 +304,13 @@ async def _fetch_memories(client_key: str) -> str:
 async def _fetch_commitments(client_key: str) -> str:
     try:
         from ..models.database import list_commitments
-        from ..tools.slack_tools import resolve_user_ids
+        from ..tools.slack_tools import resolve_commitment_users
         pending = await list_commitments(client_key=client_key, status="pending", limit=20)
         recent_done = await list_commitments(client_key=client_key, status="done", limit=5)
 
-        # Resolve any raw Slack user IDs stored in assigned_to / requested_by
-        for row in pending + recent_done:
-            for field in ("assigned_to", "requested_by"):
-                if row.get(field):
-                    row[field] = await resolve_user_ids(row[field])
+        # Resolve user IDs using the correct workspace token per commitment
+        pending    = [await resolve_commitment_users(r) for r in pending]
+        recent_done = [await resolve_commitment_users(r) for r in recent_done]
 
         parts = []
         if pending:

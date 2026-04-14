@@ -83,46 +83,88 @@ def _get_env_workspaces() -> dict:
         return {}
 
 
-# Global user ID → display name cache (lives for the process lifetime)
+# Global user ID → display name cache: uid → name
+# Keyed only by uid since Slack user IDs are globally unique.
 _user_name_cache: dict[str, str] = {}
+
+_UID_RE = __import__("re").compile(r"<@([A-Z0-9]{6,12})>|@([A-Z0-9]{6,12})\b")
+
+
+async def _resolve_uid(uid: str, clients: list) -> str:
+    """
+    Try each AsyncWebClient in *clients* until users_info succeeds.
+    Returns display name or raw uid on failure.
+    """
+    if uid in _user_name_cache:
+        return _user_name_cache[uid]
+    for sc in clients:
+        try:
+            info = await sc.users_info(user=uid)
+            u = info.get("user", {})
+            name = (
+                u.get("profile", {}).get("display_name")
+                or u.get("real_name")
+                or u.get("name")
+                or uid
+            )
+            if name and name != uid:
+                _user_name_cache[uid] = name
+                return name
+        except Exception:
+            continue
+    _user_name_cache[uid] = uid
+    return uid
+
+
+async def _replace_uids_in_text(text: str, clients: list) -> str:
+    if not text:
+        return text
+    flat_ids = {a or b for a, b in _UID_RE.findall(text) if (a or b)}
+    for uid in flat_ids:
+        name = await _resolve_uid(uid, clients)
+        text = text.replace(f"<@{uid}>", f"@{name}").replace(f"@{uid}", f"@{name}")
+    return text
 
 
 async def resolve_user_ids(text: str) -> str:
-    """
-    Replace any @UXXXXXXX or <@UXXXXXXX> Slack user IDs in *text* with display names.
-    Uses TROPICAL_BOT_TOKEN. Safe to call even if token is missing (returns text unchanged).
-    """
-    import re as _re
-    if not text:
-        return text
-
-    ids = set(_re.findall(r"<@([A-Z0-9]{6,12})>|@([A-Z0-9]{6,12})\b", text))
-    flat_ids = {a or b for a, b in ids if (a or b)}
-    if not flat_ids:
-        return text
-
+    """Replace @UXXXXXXX IDs in text using TROPICAL_BOT_TOKEN."""
     token = os.getenv("TROPICAL_BOT_TOKEN", "")
-    if not token:
+    if not token or not text:
         return text
+    return await _replace_uids_in_text(text, [AsyncWebClient(token=token)])
 
-    sc = AsyncWebClient(token=token)
-    for uid in flat_ids:
-        if uid not in _user_name_cache:
-            try:
-                info = await sc.users_info(user=uid)
-                u = info.get("user", {})
-                _user_name_cache[uid] = (
-                    u.get("profile", {}).get("display_name")
-                    or u.get("real_name")
-                    or u.get("name")
-                    or uid
-                )
-            except Exception:
-                _user_name_cache[uid] = uid
-        name = _user_name_cache[uid]
-        text = text.replace(f"<@{uid}>", f"@{name}").replace(f"@{uid}", f"@{name}")
 
-    return text
+async def resolve_commitment_users(row: dict) -> dict:
+    """
+    Resolve Slack user IDs in a commitment row's assigned_to and requested_by.
+
+    Picks the right workspace token from source_channel:
+      - "ext:galena#general"  → tries Galena token first, then TROPICAL_BOT_TOKEN
+      - "internal#..."        → uses TROPICAL_BOT_TOKEN
+      - "readai:..."          → tries TROPICAL_BOT_TOKEN (best effort)
+    """
+    source_channel = row.get("source_channel", "")
+    tropical_token = os.getenv("TROPICAL_BOT_TOKEN", "")
+
+    clients: list[AsyncWebClient] = []
+
+    if source_channel.startswith("ext:"):
+        workspace_key = source_channel[4:].split("#")[0]
+        ws = await _get_workspaces()
+        ws_token = ws.get(workspace_key, {}).get("token", "")
+        if ws_token:
+            clients.append(AsyncWebClient(token=ws_token))
+    if tropical_token:
+        clients.append(AsyncWebClient(token=tropical_token))
+
+    if not clients:
+        return row
+
+    for field in ("assigned_to", "requested_by"):
+        if row.get(field):
+            row[field] = await _replace_uids_in_text(row[field], clients)
+
+    return row
 
 
 async def _get_workspaces() -> dict:

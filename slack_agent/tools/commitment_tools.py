@@ -230,13 +230,10 @@ async def _add(inp: dict) -> str:
 
 
 async def _resolve_rows(rows: list[dict]) -> list[dict]:
-    """Resolve Slack user IDs in assigned_to / requested_by fields."""
+    """Resolve Slack user IDs using the correct workspace token per commitment."""
     try:
-        from ..tools.slack_tools import resolve_user_ids
-        for row in rows:
-            for field in ("assigned_to", "requested_by"):
-                if row.get(field):
-                    row[field] = await resolve_user_ids(row[field])
+        from .slack_tools import resolve_commitment_users
+        rows = [await resolve_commitment_users(r) for r in rows]
     except Exception:
         pass
     return rows
