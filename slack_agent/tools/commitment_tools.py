@@ -229,6 +229,19 @@ async def _add(inp: dict) -> str:
     return resp
 
 
+async def _resolve_rows(rows: list[dict]) -> list[dict]:
+    """Resolve Slack user IDs in assigned_to / requested_by fields."""
+    try:
+        from ..tools.slack_tools import resolve_user_ids
+        for row in rows:
+            for field in ("assigned_to", "requested_by"):
+                if row.get(field):
+                    row[field] = await resolve_user_ids(row[field])
+    except Exception:
+        pass
+    return rows
+
+
 async def _list(inp: dict) -> str:
     client_key = inp.get("client_key") or None
     status_filter = inp.get("status", "pending")
@@ -238,6 +251,7 @@ async def _list(inp: dict) -> str:
         status_filter = None
 
     rows = await list_commitments(client_key=client_key, status=status_filter, limit=limit)
+    rows = await _resolve_rows(rows)
     if not rows:
         scope = f"*{client_key}*" if client_key else "todos os clientes"
         st = f" com status `{inp.get('status','pending')}`" if inp.get("status") else " pendentes"
@@ -283,6 +297,7 @@ async def _update(inp: dict) -> str:
 async def _overdue(inp: dict) -> str:
     days = int(inp.get("days_old", 3))
     rows = await get_overdue_commitments(days_old=days)
+    rows = await _resolve_rows(rows)
     if not rows:
         return f"Nenhum compromisso pendente há mais de {days} dias. 👍"
 

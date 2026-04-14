@@ -83,6 +83,48 @@ def _get_env_workspaces() -> dict:
         return {}
 
 
+# Global user ID → display name cache (lives for the process lifetime)
+_user_name_cache: dict[str, str] = {}
+
+
+async def resolve_user_ids(text: str) -> str:
+    """
+    Replace any @UXXXXXXX or <@UXXXXXXX> Slack user IDs in *text* with display names.
+    Uses TROPICAL_BOT_TOKEN. Safe to call even if token is missing (returns text unchanged).
+    """
+    import re as _re
+    if not text:
+        return text
+
+    ids = set(_re.findall(r"<@([A-Z0-9]{6,12})>|@([A-Z0-9]{6,12})\b", text))
+    flat_ids = {a or b for a, b in ids if (a or b)}
+    if not flat_ids:
+        return text
+
+    token = os.getenv("TROPICAL_BOT_TOKEN", "")
+    if not token:
+        return text
+
+    sc = AsyncWebClient(token=token)
+    for uid in flat_ids:
+        if uid not in _user_name_cache:
+            try:
+                info = await sc.users_info(user=uid)
+                u = info.get("user", {})
+                _user_name_cache[uid] = (
+                    u.get("profile", {}).get("display_name")
+                    or u.get("real_name")
+                    or u.get("name")
+                    or uid
+                )
+            except Exception:
+                _user_name_cache[uid] = uid
+        name = _user_name_cache[uid]
+        text = text.replace(f"<@{uid}>", f"@{name}").replace(f"@{uid}", f"@{name}")
+
+    return text
+
+
 async def _get_workspaces() -> dict:
     """Return merged workspace registry: env + DB (DB takes precedence)."""
     merged = _get_env_workspaces()
