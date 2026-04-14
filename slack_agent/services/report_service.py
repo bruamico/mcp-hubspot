@@ -277,13 +277,25 @@ async def _fetch_unanswered(client_key: str) -> str:
 async def _fetch_memories(client_key: str) -> str:
     try:
         from ..models.database import recall_memories
-        rows = await recall_memories(client_key=client_key, limit=15)
+        rows = await recall_memories(client_key=client_key, limit=20)
         if not rows:
             return "Nenhuma memória salva para este cliente."
+
+        # Separate preferences from other memories so Claude can use them for tone/personalization
+        prefs = [r for r in rows if r.get("topic") == "preferências"]
+        rest  = [r for r in rows if r.get("topic") != "preferências"]
+
         parts = []
-        for r in rows:
-            date = r.get("created_at", "")[:10]
-            parts.append(f"• [{date} | {r['topic']}] {r['content']}")
+        if prefs:
+            parts.append("PREFERÊNCIAS DO CLIENTE (use para personalizar tom e abordagem):")
+            for r in prefs:
+                parts.append(f"  • {r['content']}")
+        if rest:
+            if prefs:
+                parts.append("HISTÓRICO:")
+            for r in rest:
+                date = r.get("created_at", "")[:10]
+                parts.append(f"• [{date} | {r['topic']}] {r['content']}")
         return "\n".join(parts)
     except Exception as exc:
         return f"(erro memória: {exc})"
@@ -390,6 +402,7 @@ FONTES E O QUE EXTRAIR:
 • *Read.ai:* decisões e action items de reuniões
 • *HubSpot:* emails, calls, notas de relacionamento
 • *Compromissos rastreados:* mostre ⏳ pendentes (com dias em aberto) e ✅ entregues recentes; pendente critical/high há +3 dias → eleva o cliente para 🔴
+• *PREFERÊNCIAS DO CLIENTE* (na seção de memória): use para ajustar tom, detalhe e foco do briefing daquele cliente. Ex: "prefere comunicação direta" → sem rodeios; "contato principal é Maria" → cite o nome
 • Fonte com "⚠️ERRO" → escreva _(fonte indisponível)_ — nunca trate como "sem atividade"
 
 CRITÉRIOS DE PRIORIDADE:

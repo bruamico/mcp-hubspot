@@ -100,6 +100,19 @@ Formato por cliente:
 
 ---
 
+## REGRAS DE PREFERÊNCIAS DE CLIENTE
+
+Salve preferências com `memory_save` (topic="preferências") sempre que detectar:
+- Estilo de comunicação: "prefere comunicação formal", "responde melhor com exemplos"
+- Contato principal: "ponto de contato é Maria Lima desde março/25"
+- Sensibilidades: "não gosta de relatórios muito longos", "cobra resposta rápida às sextas"
+- Contexto fixo: "projeto pausado por budget freeze até junho"
+
+Ao responder sobre um cliente, verifique `memory_recall(topic="preferências")` e ajuste:
+- Tom (formal/informal)
+- Nível de detalhe
+- Quem mencionar como responsável no cliente
+
 ## REGRAS DE COMPROMISSOS
 
 O bot extrai compromissos automaticamente a cada hora dos canais Slack. Você ainda pode:

@@ -78,6 +78,22 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
         replace_existing=True,
     )
 
+    # Monday briefing — 8:00 AM São Paulo (weekly recap of previous week)
+    scheduler.add_job(
+        _monday_briefing,
+        CronTrigger(day_of_week="mon", hour=8, minute=0, timezone=SAO_PAULO_TZ),
+        id="monday_briefing",
+        replace_existing=True,
+    )
+
+    # Due-date alerts — daily at 8:30 AM São Paulo
+    scheduler.add_job(
+        _due_date_alerts,
+        CronTrigger(hour=8, minute=30, timezone=SAO_PAULO_TZ),
+        id="due_date_alerts",
+        replace_existing=True,
+    )
+
     logger.info("Scheduler configured with %d jobs", len(scheduler.get_jobs()))
     return scheduler
 
@@ -223,6 +239,60 @@ async def _run_due_monitor_jobs() -> None:
         await run_all_monitor_jobs(_slack_client)
     except Exception as exc:
         logger.error("_run_due_monitor_jobs failed: %s", exc)
+
+
+async def _monday_briefing() -> None:
+    """Post a full weekly recap every Monday at 8h — covers the previous 7 days."""
+    if not _slack_client:
+        return
+    try:
+        from ..tools.slack_tools import _get_workspaces
+        from ..services.report_service import generate_report
+
+        ws = await _get_workspaces()
+        all_clients = list(ws.keys())
+        if not all_clients:
+            return
+
+        logger.info("Monday briefing: generating report for %d clients (168h)", len(all_clients))
+        report = await generate_report(all_clients, hours_back=168)
+        await _slack_client.chat_postMessage(
+            channel=REPORT_CHANNEL,
+            text=f":calendar: *Briefing de Segunda — semana passada*\n\n{report}",
+        )
+        logger.info("Monday briefing posted to %s", REPORT_CHANNEL)
+    except Exception as exc:
+        logger.error("Monday briefing failed: %s", exc)
+
+
+async def _due_date_alerts() -> None:
+    """Alert about commitments whose due_date falls within the next 24 hours."""
+    if not _slack_client:
+        return
+    try:
+        from ..models.database import get_due_soon_commitments
+        rows = await get_due_soon_commitments(hours_ahead=24)
+        if not rows:
+            return
+
+        by_client: dict[str, list] = {}
+        for r in rows:
+            by_client.setdefault(r["client_key"], []).append(r)
+
+        lines = [f":alarm_clock: *Prazos vencendo nas próximas 24h ({len(rows)} item(s)):*\n"]
+        for ck, items in by_client.items():
+            lines.append(f"*{ck.upper()}*")
+            for c in items:
+                assigned = f" → {c['assigned_to']}" if c.get("assigned_to") else ""
+                lines.append(f"  • #{c['id']} {c['description']}{assigned} | prazo: {c['due_date']}")
+
+        await _slack_client.chat_postMessage(
+            channel=REPORT_CHANNEL,
+            text="\n".join(lines),
+        )
+        logger.info("Due-date alerts posted (%d items)", len(rows))
+    except Exception as exc:
+        logger.error("_due_date_alerts failed: %s", exc)
 
 
 async def _run_commitment_extraction() -> None:

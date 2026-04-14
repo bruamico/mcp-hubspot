@@ -1,21 +1,18 @@
 """
 Read.ai webhook handler.
 Validates HMAC-SHA256 signature and stores meeting summaries in SQLite.
-
-Read.ai sends the signature in one of these headers:
-  X-Readai-Signature, X-ReadAI-Signature, X-Signature
-The value may be a raw hex digest or prefixed with "sha256=".
-The signing key is the raw secret string (UTF-8), not base64-decoded.
+On each new meeting, action items are auto-extracted and saved as commitments.
 """
 import hashlib
 import hmac
 import json
 import logging
 import os
+import re
 
 from aiohttp import web
 
-from ..models.database import upsert_readai_call
+from ..models.database import upsert_readai_call, add_commitment
 
 logger = logging.getLogger(__name__)
 
@@ -165,4 +162,70 @@ async def handle_readai_webhook(request: web.Request) -> web.Response:
     is_new = await upsert_readai_call(meeting_id, data)
     logger.info("Read.ai meeting %s %s", meeting_id, "stored" if is_new else "updated")
 
+    # Auto-extract action items as commitments
+    if data.get("action_items"):
+        await _create_commitments_from_meeting(meeting_id, data)
+
     return web.Response(status=200, text="ok")
+
+
+def _identify_client_from_meeting(title: str, participants: str) -> str:
+    """Best-effort match of a meeting to a client key via WORKSPACES_JSON."""
+    try:
+        workspaces = json.loads(os.getenv("WORKSPACES_JSON", "{}"))
+        text = (title + " " + participants).lower()
+        for key in workspaces:
+            if key.lower() in text:
+                return key
+    except Exception:
+        pass
+    return ""
+
+
+async def _create_commitments_from_meeting(meeting_id: str, data: dict) -> None:
+    """Parse action items from a Read.ai meeting and create pending commitments."""
+    client_key = _identify_client_from_meeting(data.get("title", ""), data.get("participants", ""))
+    if not client_key:
+        client_key = "_readai"  # fallback bucket for unmatched meetings
+
+    title = data.get("title", "Reunião")
+    source_prefix = f"readai:{meeting_id}"
+    date_str = (data.get("date") or "")[:10]
+
+    # Parse "- task description (assignee)" lines
+    raw = data.get("action_items", "")
+    created = 0
+    for line in raw.splitlines():
+        line = line.strip().lstrip("- •").strip()
+        if not line:
+            continue
+
+        # Extract assignee from "(Name)" at end
+        assignee = ""
+        m = re.search(r"\(([^)]{2,50})\)\s*$", line)
+        if m:
+            assignee = m.group(1)
+            line = line[:m.start()].strip()
+
+        if len(line) < 5:
+            continue
+
+        # Use meeting date as created_at so age is accurate
+        msg_created_at = None
+        if date_str:
+            msg_created_at = f"{date_str} 00:00:00"
+
+        await add_commitment(
+            client_key=client_key,
+            description=line[:500],
+            requested_by=f"Read.ai — {title}",
+            assigned_to=assignee,
+            priority="normal",
+            source_channel=source_prefix,
+            source_ts=meeting_id,
+            msg_created_at=msg_created_at,
+        )
+        created += 1
+
+    if created:
+        logger.info("Created %d commitments from Read.ai meeting %s (client: %s)", created, meeting_id, client_key)

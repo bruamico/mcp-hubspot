@@ -793,3 +793,21 @@ async def get_overdue_commitments(days_old: int = 3) -> list[dict]:
             (f"-{days_old}",),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_due_soon_commitments(hours_ahead: int = 24) -> list[dict]:
+    """Return pending commitments whose due_date is within the next N hours."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT id, client_key, description, requested_by, assigned_to,
+                      priority, due_date, created_at
+               FROM commitments
+               WHERE status = 'pending'
+                 AND due_date IS NOT NULL AND due_date != ''
+                 AND due_date <= date('now', ? || ' hours')
+                 AND due_date >= date('now')
+               ORDER BY due_date ASC, client_key ASC""",
+            (f"+{hours_ahead}",),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
