@@ -133,21 +133,38 @@ async def _process_channel(
         return 0, 0
 
     # Resolve user IDs to display names so Claude sees real names, not @UXXX
+    # Build fallback client list: workspace token first, then Tropical Hub token.
+    # This handles the common case where a Tropical Hub member is mentioned in an
+    # external workspace channel — the external token can't resolve Tropical Hub UIDs,
+    # but TROPICAL_BOT_TOKEN can.
     _user_cache: dict[str, str] = {}
+    _tropical_token = os.getenv("TROPICAL_BOT_TOKEN", "")
+    from slack_sdk.web.async_client import AsyncWebClient as _AWC
+    # Build fallback list; avoid duplicate if both tokens are the same
+    _ws_token = (sc.token if hasattr(sc, "token") else "")
+    _fallback_clients = [sc] + (
+        [_AWC(token=_tropical_token)] if _tropical_token and _tropical_token != _ws_token else []
+    )
 
     async def _resolve_user(uid: str) -> str:
         if uid not in _user_cache:
-            try:
-                info = await sc.users_info(user=uid)
-                u = info.get("user", {})
-                _user_cache[uid] = (
-                    u.get("profile", {}).get("display_name")
-                    or u.get("real_name")
-                    or u.get("name")
-                    or uid
-                )
-            except Exception:
-                _user_cache[uid] = uid
+            for _client in _fallback_clients:
+                try:
+                    info = await _client.users_info(user=uid)
+                    u = info.get("user", {})
+                    name = (
+                        u.get("profile", {}).get("display_name")
+                        or u.get("real_name")
+                        or u.get("name")
+                        or ""
+                    )
+                    if name:
+                        _user_cache[uid] = name
+                        break
+                except Exception:
+                    continue
+            else:
+                _user_cache[uid] = uid  # couldn't resolve with any token
         return _user_cache[uid]
 
     import re as _re

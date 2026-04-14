@@ -160,7 +160,7 @@ async def resolve_commitment_users(row: dict) -> dict:
     if not clients:
         return row
 
-    for field in ("assigned_to", "requested_by"):
+    for field in ("assigned_to", "requested_by", "description"):
         if row.get(field):
             row[field] = await _replace_uids_in_text(row[field], clients)
 
