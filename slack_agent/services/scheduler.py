@@ -35,18 +35,18 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
 
     scheduler = AsyncIOScheduler(timezone=SAO_PAULO_TZ)
 
-    # Daily HubSpot summary — 9:00 AM São Paulo
+    # Daily HubSpot summary + overdue commitments — 9:30 AM São Paulo
     scheduler.add_job(
         _daily_hubspot_summary,
-        CronTrigger(hour=9, minute=0, timezone=SAO_PAULO_TZ),
+        CronTrigger(hour=9, minute=30, timezone=SAO_PAULO_TZ),
         id="daily_summary",
         replace_existing=True,
     )
 
-    # Deal follow-up check — every 4 hours
+    # Deal follow-up check — every 4 hours (first run 10h, then 14h, 18h, 22h)
     scheduler.add_job(
         _check_deals_without_followup,
-        CronTrigger(hour="8,12,16,20", minute=0, timezone=SAO_PAULO_TZ),
+        CronTrigger(hour="10,14,18,22", minute=0, timezone=SAO_PAULO_TZ),
         id="deal_followup",
         replace_existing=True,
     )
@@ -78,18 +78,18 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
         replace_existing=True,
     )
 
-    # Monday briefing — 8:00 AM São Paulo (weekly recap of previous week)
+    # Monday briefing — 9:30 AM São Paulo (weekly recap of previous week)
     scheduler.add_job(
         _monday_briefing,
-        CronTrigger(day_of_week="mon", hour=8, minute=0, timezone=SAO_PAULO_TZ),
+        CronTrigger(day_of_week="mon", hour=9, minute=30, timezone=SAO_PAULO_TZ),
         id="monday_briefing",
         replace_existing=True,
     )
 
-    # Due-date alerts — daily at 8:30 AM São Paulo
+    # Due-date alerts — daily at 9:35 AM São Paulo (just after daily summary)
     scheduler.add_job(
         _due_date_alerts,
-        CronTrigger(hour=8, minute=30, timezone=SAO_PAULO_TZ),
+        CronTrigger(hour=9, minute=35, timezone=SAO_PAULO_TZ),
         id="due_date_alerts",
         replace_existing=True,
     )
