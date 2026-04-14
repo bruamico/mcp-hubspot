@@ -387,21 +387,62 @@ async def get_recent_meetings(limit: int = 10) -> list[dict]:
             return [dict(row) for row in rows]
 
 
-async def search_meetings(query: str, limit: int = 5) -> list[dict]:
-    """Full-text search across title, summary and action_items."""
+async def search_meetings(query: str, limit: int = 20, since_iso: str | None = None) -> list[dict]:
+    """Full-text search across title, summary, action_items and participants.
+
+    Args:
+        query: Keyword to search for (LIKE match).
+        limit: Maximum number of results *after* time filtering.
+        since_iso: ISO date string (YYYY-MM-DD or full ISO) to filter meetings on or after.
+    """
     pattern = f"%{query}%"
+    base_sql = """
+        SELECT meeting_id, title, date, participants, summary, action_items, created_at
+        FROM readai_calls
+        WHERE (title LIKE ? OR summary LIKE ? OR action_items LIKE ? OR participants LIKE ?)
+    """
+    params: list = [pattern, pattern, pattern, pattern]
+
+    if since_iso:
+        base_sql += " AND (date >= ? OR (date IS NULL AND created_at >= ?))"
+        params += [since_iso[:10], since_iso[:10]]
+
+    base_sql += " ORDER BY COALESCE(date, created_at) DESC LIMIT ?"
+    params.append(limit)
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """
-            SELECT meeting_id, title, date, participants, summary, action_items, created_at
-            FROM readai_calls
-            WHERE title LIKE ? OR summary LIKE ? OR action_items LIKE ? OR participants LIKE ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (pattern, pattern, pattern, pattern, limit),
-        ) as cursor:
+        async with db.execute(base_sql, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def get_meetings_in_window(since_iso: str, until_iso: str | None = None, limit: int = 50) -> list[dict]:
+    """Return all meetings within a date range, ordered by meeting date descending.
+
+    Args:
+        since_iso: Start of the window (YYYY-MM-DD or full ISO). Inclusive.
+        until_iso: End of the window (optional). Defaults to now.
+        limit: Maximum rows returned.
+    """
+    conditions = ["(date >= ? OR (date IS NULL AND created_at >= ?))"]
+    params: list = [since_iso[:10], since_iso[:10]]
+
+    if until_iso:
+        conditions.append("(date <= ? OR (date IS NULL AND created_at <= ?))")
+        params += [until_iso[:10], until_iso[:10]]
+
+    sql = (
+        "SELECT meeting_id, title, date, duration, participants, summary, action_items, created_at "
+        "FROM readai_calls WHERE "
+        + " AND ".join(conditions)
+        + " ORDER BY COALESCE(date, created_at) DESC LIMIT ?"
+    )
+    params.append(limit)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 

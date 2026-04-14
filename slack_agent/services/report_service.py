@@ -128,31 +128,46 @@ async def _fetch_external_slack(client_key: str, hours_back: int) -> str:
 
 async def _fetch_readai(client_key: str, hours_back: int) -> str:
     try:
-        from ..models.database import search_meetings
-        rows = await search_meetings(client_key, limit=10)
+        import datetime as _dt
+        from ..models.database import search_meetings, get_meetings_in_window
+
+        # Compute ISO cutoff for SQL-level filtering
+        since_dt = _dt.datetime.utcnow() - _dt.timedelta(hours=hours_back)
+        since_iso = since_dt.strftime("%Y-%m-%d")
+
+        # Scale limit with the requested window
+        limit = max(20, min(100, hours_back // 2))
+
+        # Primary: keyword search within the time window
+        rows = await search_meetings(client_key, limit=limit, since_iso=since_iso)
+
+        # Fallback: if keyword search returns nothing, use window-only query
+        # (meeting title may not contain the client name)
         if not rows:
-            return "Nenhuma reunião encontrada no Read.ai para esse cliente."
-        cutoff = time.time() - hours_back * 3600
+            all_rows = await get_meetings_in_window(since_iso, limit=limit)
+            # Keep only rows that have any loose match to the client key
+            # (partial word in title/participants) so we don't flood unrelated meetings
+            key_lower = client_key.lower()
+            rows = [
+                r for r in all_rows
+                if key_lower in (r.get("title") or "").lower()
+                or key_lower in (r.get("participants") or "").lower()
+                or key_lower in (r.get("summary") or "").lower()[:200]
+            ]
+            # If still nothing, return the window summary (raw, unfiltered) capped at 5
+            if not rows:
+                rows = all_rows[:5]
+                if not rows:
+                    return "Nenhuma reunião encontrada no Read.ai para esse cliente."
+
         parts = []
         for r in rows:
-            # Filter by date within the time window
-            try:
-                import datetime as _dt
-                row_ts = _dt.datetime.fromisoformat(
-                    (r.get("date") or r.get("created_at") or "2000-01-01")[:10]
-                ).timestamp()
-                if row_ts < cutoff:
-                    continue
-            except Exception:
-                pass
             parts.append(
-                f"• {r.get('date','?')[:10]} — {r.get('title','?')}\n"
+                f"• {(r.get('date') or r.get('created_at') or '?')[:10]} — {r.get('title','?')}\n"
                 f"  Participantes: {r.get('participants','?')}\n"
                 f"  Resumo: {(r.get('summary') or '')[:400]}\n"
                 f"  Action items: {(r.get('action_items') or '')[:300]}"
             )
-        if not parts:
-            return "Nenhuma reunião no Read.ai dentro da janela de tempo solicitada."
         return "\n".join(parts)
     except Exception as exc:
         logger.error("_fetch_readai(%s): %s", client_key, exc)

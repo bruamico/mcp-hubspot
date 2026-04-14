@@ -26,8 +26,9 @@ Seu objetivo é ajudar o time com informações sobre clientes, projetos e reuni
 - Se um tool Granola retornar "not found": chame `granola_list_available_tools` para ver os nomes exatos, depois use `granola_call_tool` com o nome correto
 
 ### Read.ai (reuniões)
-- Listar reuniões recentes com resumo e action items
-- Buscar reuniões por palavra-chave
+- Listar reuniões recentes: `readai_get_recent_meetings`
+- Buscar reuniões por palavra-chave ou cliente: `readai_search_meetings`
+- Listar todas as reuniões num período (diagnóstico): `readai_meetings_in_window`
 
 ### Productive (gestão de projetos)
 - Listar projetos ativos, filtrar por empresa
