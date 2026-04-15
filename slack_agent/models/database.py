@@ -852,3 +852,90 @@ async def get_due_soon_commitments(hours_ahead: int = 24) -> list[dict]:
             (f"+{hours_ahead}",),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Scheduled reports (SQLite helpers — used by slack_tools and scheduler)
+# ---------------------------------------------------------------------------
+
+async def list_scheduled_reports() -> list[dict]:
+    """Return all active scheduled reports."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, client, interval_minutes, hours_back, channel, active, last_run_at, created_at "
+            "FROM scheduled_reports WHERE active=1 ORDER BY id"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def add_scheduled_report(
+    client: str | None, interval_minutes: int, hours_back: int, channel: str
+) -> int:
+    """Insert a new scheduled report. Returns new row id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO scheduled_reports (client, interval_minutes, hours_back, channel, active) "
+            "VALUES (?, ?, ?, ?, 1)",
+            (client, interval_minutes, hours_back, channel),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def delete_scheduled_report(report_id: int) -> bool:
+    """Deactivate a scheduled report. Returns True if found."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE scheduled_reports SET active=0 WHERE id=?", (report_id,)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def update_scheduled_report_last_run(report_id: int) -> None:
+    """Set last_run_at = now for a scheduled report."""
+    from datetime import datetime, timezone
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE scheduled_reports SET last_run_at=? WHERE id=?", (now_iso, report_id)
+        )
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Supabase backend override
+# When SUPABASE_URL is set, all functions above are replaced with the
+# Supabase equivalents from supabase_db.py (same signatures, no code changes
+# needed in the rest of the application).
+# ---------------------------------------------------------------------------
+
+if os.getenv("SUPABASE_URL"):
+    try:
+        from .supabase_db import (  # noqa: F401, F811
+            init_db,
+            add_workspace, remove_workspace, list_db_workspaces, get_workspace,
+            save_oauth_token, get_oauth_token,
+            upsert_readai_call, reprocess_raw_payloads,
+            get_recent_meetings, search_meetings, get_meetings_in_window,
+            was_alert_sent, mark_alert_sent,
+            save_memory, recall_memories, fetch_memories_with_embeddings,
+            list_memory_topics, delete_memory,
+            set_channel_mapping, get_channel_mapping, list_channel_mappings,
+            add_monitoring_job, remove_monitoring_job, list_monitoring_jobs,
+            update_monitoring_job_last_run,
+            get_monitoring_snapshot, save_monitoring_snapshot,
+            add_commitment, update_commitment, list_commitments,
+            commitment_source_exists,
+            get_watermark, set_watermark,
+            get_overdue_commitments, get_due_soon_commitments,
+            list_scheduled_reports, add_scheduled_report,
+            delete_scheduled_report, update_scheduled_report_last_run,
+        )
+        logger.info("Supabase backend loaded — SQLite functions overridden")
+    except ImportError as exc:
+        logger.warning(
+            "SUPABASE_URL is set but supabase package not available (%s) — "
+            "falling back to SQLite", exc
+        )

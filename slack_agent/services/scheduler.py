@@ -172,39 +172,29 @@ async def _run_due_scheduled_reports() -> None:
     if not _slack_client:
         return
     try:
-        import aiosqlite
-        from ..models.database import DB_PATH
+        from ..models.database import list_scheduled_reports, update_scheduled_report_last_run
         from ..agent import run_agent
         from ..prompts import SYSTEM_PROMPT
 
-        now_iso = datetime.now(tz=timezone.utc).isoformat()
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                """SELECT id, client, interval_minutes, hours_back, channel, last_run_at
-                   FROM scheduled_reports WHERE active=1"""
-            ) as cur:
-                reports = [dict(r) for r in await cur.fetchall()]
+        reports = await list_scheduled_reports()
 
         for report in reports:
-            last_run = report["last_run_at"]
+            last_run = report.get("last_run_at")
             interval_sec = report["interval_minutes"] * 60
             if last_run:
-                from datetime import datetime as dt2
-                last_dt = dt2.fromisoformat(last_run.replace("Z", "+00:00"))
+                last_dt = datetime.fromisoformat(str(last_run).replace("Z", "+00:00"))
                 if last_dt.tzinfo is None:
                     last_dt = last_dt.replace(tzinfo=timezone.utc)
-                elapsed = (datetime.now(tz=timezone.utc) - last_dt).total_seconds()
-                if elapsed < interval_sec:
+                if (datetime.now(tz=timezone.utc) - last_dt).total_seconds() < interval_sec:
                     continue
 
-            # Build prompt for the report
             client = report["client"]
             hours_back = report["hours_back"]
-            if client:
-                prompt = f"Gere o relatório do cliente {client} das últimas {hours_back}h."
-            else:
-                prompt = f"Gere o relatório de todos os clientes das últimas {hours_back}h."
+            prompt = (
+                f"Gere o relatório do cliente {client} das últimas {hours_back}h."
+                if client
+                else f"Gere o relatório de todos os clientes das últimas {hours_back}h."
+            )
 
             try:
                 response = await run_agent(
@@ -216,13 +206,7 @@ async def _run_due_scheduled_reports() -> None:
                     channel=report["channel"],
                     text=f"📊 *Relatório automático*\n\n{response}",
                 )
-                # Update last_run_at
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute(
-                        "UPDATE scheduled_reports SET last_run_at=? WHERE id=?",
-                        (now_iso, report["id"]),
-                    )
-                    await db.commit()
+                await update_scheduled_report_last_run(report["id"])
                 logger.info("Scheduled report %d posted to %s", report["id"], report["channel"])
             except Exception as exc:
                 logger.error("Scheduled report %d failed: %s", report["id"], exc)

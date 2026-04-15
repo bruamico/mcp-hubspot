@@ -897,18 +897,14 @@ async def _manage_monitor(tool_input: dict) -> str:
 
 async def _schedule_report(tool_input: dict) -> str:
     """Create, list or delete scheduled reports."""
-    from ..models.database import DB_PATH
-    import aiosqlite
+    from ..models.database import (
+        list_scheduled_reports, add_scheduled_report, delete_scheduled_report,
+    )
 
     action = tool_input.get("action")
 
     if action == "list":
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT id, client, interval_minutes, hours_back, channel, active, last_run_at FROM scheduled_reports WHERE active=1 ORDER BY id"
-            ) as cur:
-                rows = [dict(r) for r in await cur.fetchall()]
+        rows = await list_scheduled_reports()
         if not rows:
             return "Nenhum relatório agendado ativo."
         lines = []
@@ -928,13 +924,7 @@ async def _schedule_report(tool_input: dict) -> str:
         client = tool_input.get("client")
         if not interval:
             return "Erro: `interval_minutes` é obrigatório para criar um relatório agendado."
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute(
-                "INSERT INTO scheduled_reports (client, interval_minutes, hours_back, channel, active) VALUES (?,?,?,?,1)",
-                (client, interval, hours_back, channel),
-            )
-            await db.commit()
-            report_id = cur.lastrowid
+        report_id = await add_scheduled_report(client, int(interval), int(hours_back), channel)
         client_str = client or "todos os clientes"
         return (
             f"Relatório agendado criado (ID `{report_id}`):\n"
@@ -949,12 +939,8 @@ async def _schedule_report(tool_input: dict) -> str:
         report_id = tool_input.get("report_id")
         if not report_id:
             return "Erro: `report_id` é obrigatório para remover um relatório agendado."
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute(
-                "UPDATE scheduled_reports SET active=0 WHERE id=?", (report_id,)
-            )
-            await db.commit()
-        if cur.rowcount:
+        removed = await delete_scheduled_report(int(report_id))
+        if removed:
             return f"Relatório agendado ID `{report_id}` removido."
         return f"ID `{report_id}` não encontrado."
 

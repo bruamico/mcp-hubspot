@@ -16,6 +16,9 @@ redis[asyncio]>=5.0.0
 # Database
 aiosqlite>=0.20.0
 
+# Supabase (used when SUPABASE_URL is set; falls back to SQLite otherwise)
+supabase>=2.3.0
+
 # Scheduler
 APScheduler>=3.10.0
 tzdata>=2024.1
