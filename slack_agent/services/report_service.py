@@ -162,12 +162,47 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
 
         parts = []
         for r in rows:
-            parts.append(
-                f"• {(r.get('date') or r.get('created_at') or '?')[:10]} — {r.get('title','?')}\n"
-                f"  Participantes: {r.get('participants','?')}\n"
-                f"  Resumo: {(r.get('summary') or '')[:400]}\n"
-                f"  Action items: {(r.get('action_items') or '')[:300]}"
-            )
+            date_str = (r.get("date") or r.get("created_at") or "?")[:10]
+            lines = [f"• {date_str} — {r.get('title', '?')}"]
+            if r.get("participants"):
+                lines.append(f"  Participantes: {r['participants']}")
+
+            # Topics — from Supabase JSONB or plain string
+            topics_raw = r.get("topics")
+            if topics_raw:
+                if isinstance(topics_raw, list):
+                    topics_str = ", ".join(
+                        t if isinstance(t, str) else t.get("name", str(t))
+                        for t in topics_raw[:6]
+                    )
+                else:
+                    topics_str = str(topics_raw)
+                if topics_str:
+                    lines.append(f"  Tópicos: {topics_str}")
+
+            if r.get("summary"):
+                lines.append(f"  Resumo: {r['summary'][:400]}")
+
+            # Key questions
+            kq_raw = r.get("key_questions")
+            if kq_raw:
+                if isinstance(kq_raw, list):
+                    kq_str = " | ".join(
+                        q if isinstance(q, str) else q.get("text", str(q))
+                        for q in kq_raw[:3]
+                    )
+                else:
+                    kq_str = str(kq_raw)
+                if kq_str:
+                    lines.append(f"  Questões: {kq_str}")
+
+            if r.get("action_items"):
+                lines.append(f"  Action items: {r['action_items'][:300]}")
+
+            if r.get("recording_url"):
+                lines.append(f"  Gravação: {r['recording_url']}")
+
+            parts.append("\n".join(lines))
         return "\n".join(parts)
     except Exception as exc:
         logger.error("_fetch_readai(%s): %s", client_key, exc)

@@ -349,3 +349,264 @@ async def run_extraction(slack_client=None) -> dict:
     }
     logger.info("Extraction complete: %s", summary)
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Supabase meetings → commitments + auto-memory
+# ---------------------------------------------------------------------------
+
+async def _identify_client_from_supabase_meeting(meeting: dict) -> str:
+    """
+    Best-effort client identification from a Supabase meeting row.
+
+    Strategy (in order of confidence):
+    1. Workspace key appears in title, summary, topics, or participant email domain
+    2. Workspace description words appear in the text
+    3. Partial match of key in participant email domains
+    Returns "_readai" when no match is found.
+    """
+    from ..tools.slack_tools import _get_workspaces
+
+    workspaces = await _get_workspaces()
+
+    title    = (meeting.get("title")   or "").lower()
+    summary  = (meeting.get("summary") or "").lower()[:300]
+
+    # Participants JSONB → names + email domains
+    parts_raw = meeting.get("participants") or []
+    participant_text = ""
+    if isinstance(parts_raw, list):
+        tokens = []
+        for p in parts_raw:
+            if isinstance(p, dict):
+                tokens.append((p.get("name") or "").lower())
+                email = (p.get("email") or "").lower()
+                if "@" in email:
+                    domain_root = email.split("@")[1].split(".")[0]
+                    tokens.extend([email, domain_root])
+        participant_text = " ".join(tokens)
+    else:
+        participant_text = str(parts_raw).lower()
+
+    # Topics JSONB → text
+    topics_raw = meeting.get("topics") or []
+    topics_text = ""
+    if isinstance(topics_raw, list):
+        topics_text = " ".join(
+            t if isinstance(t, str) else t.get("name", str(t))
+            for t in topics_raw
+        ).lower()
+
+    full_text = f"{title} {participant_text} {summary} {topics_text}"
+
+    best_key   = ""
+    best_score = 0
+
+    for key, info in workspaces.items():
+        score = 0
+        key_lower = key.lower()
+        desc      = (info.get("description") or "").lower()
+
+        if key_lower in full_text:
+            score += 3
+        if desc:
+            matches = sum(1 for w in desc.split() if len(w) > 3 and w in full_text)
+            score += matches
+        # Email-domain heuristic
+        sanitized_key = key_lower.replace("-", "").replace("_", "")
+        if sanitized_key in participant_text.replace(".", "").replace("-", "").replace("_", ""):
+            score += 2
+
+        if score > best_score:
+            best_score = score
+            best_key   = key
+
+    return best_key if best_score > 0 else "_readai"
+
+
+def _parse_action_items(raw) -> list[dict]:
+    """Normalise action_items (JSONB list or text) to list of {text, assignee, due_date}."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        items = []
+        import re as _re
+        for line in raw.splitlines():
+            line = line.strip().lstrip("-• ").strip()
+            if len(line) < 5:
+                continue
+            assignee = ""
+            m = _re.search(r"\(([^)]{2,50})\)\s*$", line)
+            if m:
+                assignee = m.group(1)
+                line = line[:m.start()].strip()
+            items.append({"text": line, "assignee": assignee, "due_date": ""})
+        return items
+    if isinstance(raw, list):
+        result = []
+        for a in raw:
+            if isinstance(a, dict):
+                text = (a.get("text") or a.get("content") or "").strip()
+                if len(text) >= 5:
+                    result.append({
+                        "text":      text,
+                        "assignee":  (a.get("assignee") or a.get("owner") or "").strip(),
+                        "due_date":  (a.get("due_date") or "").strip(),
+                    })
+            elif isinstance(a, str) and len(a.strip()) >= 5:
+                result.append({"text": a.strip().lstrip("-• "), "assignee": "", "due_date": ""})
+        return result
+    return []
+
+
+async def extract_from_supabase_meetings() -> dict:
+    """
+    Process Read.ai meetings stored in Supabase that haven't been analysed yet
+    (commitments_extracted_at IS NULL).
+
+    For each meeting:
+      1. Identify the client by matching workspace keys / descriptions / email domains
+      2. Extract action items from the JSONB field (richer than text parsing)
+      3. Create pending commitments with proper assignee and due_date
+      4. Save a compact meeting summary to the client's memory (topic="reuniões")
+      5. Stamp commitments_extracted_at so the meeting isn't processed again
+
+    Returns a summary dict.
+    """
+    from ..models.database import add_commitment, commitment_source_exists, save_memory
+    from datetime import datetime, timezone
+
+    # Only runs when Supabase is configured
+    if not os.getenv("SUPABASE_URL"):
+        return {"skipped": True, "reason": "SUPABASE_URL not configured"}
+
+    try:
+        from ..models.supabase_db import _sb
+        sb = await _sb()
+    except Exception as exc:
+        logger.error("extract_from_supabase_meetings: cannot connect to Supabase: %s", exc)
+        return {"skipped": True, "reason": str(exc)}
+
+    # Fetch unprocessed meetings (oldest first so we process in chronological order)
+    result = await sb.table("meetings").select(
+        "meeting_id,title,meeting_date,participants,summary,"
+        "action_items,key_questions,topics,recording_url"
+    ).is_("commitments_extracted_at", "null").order(
+        "meeting_date", desc=False
+    ).limit(50).execute()
+
+    meetings = result.data or []
+    if not meetings:
+        return {"meetings_processed": 0, "new_commitments": 0, "memories_saved": 0}
+
+    new_commitments = 0
+    memories_saved  = 0
+    now_iso         = datetime.now(tz=timezone.utc).isoformat()
+
+    for meeting in meetings:
+        meeting_id = meeting.get("meeting_id") or ""
+        if not meeting_id:
+            continue
+
+        title    = meeting.get("title") or "Reunião"
+        date_raw = (meeting.get("meeting_date") or "")[:10]
+        source_prefix = f"readai:{meeting_id}"
+
+        # 1. Identify client
+        client_key = await _identify_client_from_supabase_meeting(meeting)
+
+        # 2. Extract and create commitments
+        items = _parse_action_items(meeting.get("action_items"))
+        for idx, item in enumerate(items):
+            text = item["text"][:500]
+            # Use index as source_ts — stable, unique within meeting
+            source_ts = str(idx)
+            if await commitment_source_exists(source_prefix, source_ts):
+                continue
+
+            msg_created_at = f"{date_raw} 00:00:00" if date_raw else None
+            await add_commitment(
+                client_key=client_key,
+                description=text,
+                requested_by=f"Read.ai — {title}",
+                assigned_to=item["assignee"],
+                priority="normal",
+                due_date=item["due_date"],
+                source_channel=source_prefix,
+                source_ts=source_ts,
+                msg_created_at=msg_created_at,
+            )
+            new_commitments += 1
+
+        # 3. Auto-save compact meeting summary to memory
+        summary = (meeting.get("summary") or "").strip()
+        if client_key != "_readai" and (summary or meeting.get("topics")):
+            # Participants
+            parts_raw = meeting.get("participants") or []
+            if isinstance(parts_raw, list):
+                names = [p.get("name") or p.get("email") or "" for p in parts_raw if isinstance(p, dict)]
+                participants_str = ", ".join(n for n in names if n)
+            else:
+                participants_str = str(parts_raw)
+
+            # Topics
+            topics_raw = meeting.get("topics") or []
+            if isinstance(topics_raw, list):
+                topics_str = ", ".join(
+                    t if isinstance(t, str) else t.get("name", str(t))
+                    for t in topics_raw[:6]
+                )
+            else:
+                topics_str = str(topics_raw)
+
+            # Key questions
+            kq_raw = meeting.get("key_questions") or []
+            if isinstance(kq_raw, list):
+                kq_str = " | ".join(
+                    q if isinstance(q, str) else q.get("text", str(q))
+                    for q in kq_raw[:3]
+                )
+            else:
+                kq_str = str(kq_raw)
+
+            memory_parts = [f"{date_raw}: {title}"]
+            if participants_str:
+                memory_parts.append(f"Participantes: {participants_str}")
+            if topics_str:
+                memory_parts.append(f"Tópicos: {topics_str}")
+            if summary:
+                memory_parts.append(f"Resumo: {summary[:400]}")
+            if kq_str:
+                memory_parts.append(f"Questões: {kq_str}")
+            if item_count := len(items):
+                memory_parts.append(f"{item_count} action item(s) registrado(s)")
+            if meeting.get("recording_url"):
+                memory_parts.append(f"Gravação: {meeting['recording_url']}")
+
+            await save_memory(
+                client_key=client_key,
+                topic="reuniões",
+                content=" | ".join(memory_parts),
+                source="readai_auto",
+            )
+            memories_saved += 1
+            logger.info(
+                "Auto-memory saved for %s: %s (%d action items)",
+                client_key, title, len(items),
+            )
+
+        # 4. Stamp processed timestamp
+        try:
+            await sb.table("meetings").update(
+                {"commitments_extracted_at": now_iso}
+            ).eq("meeting_id", meeting_id).execute()
+        except Exception as exc:
+            logger.warning("Could not stamp commitments_extracted_at for %s: %s", meeting_id, exc)
+
+    summary_out = {
+        "meetings_processed": len(meetings),
+        "new_commitments":    new_commitments,
+        "memories_saved":     memories_saved,
+    }
+    logger.info("Supabase meeting extraction: %s", summary_out)
+    return summary_out

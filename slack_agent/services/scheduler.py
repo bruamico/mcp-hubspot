@@ -69,12 +69,21 @@ def init_scheduler(slack_client, hubspot_client, was_alert_sent_fn, mark_alert_s
         replace_existing=True,
     )
 
-    # Automatic commitment extraction — every 60 minutes
+    # Automatic commitment extraction from Slack — every 60 minutes
     scheduler.add_job(
         _run_commitment_extraction,
         "interval",
         minutes=60,
         id="commitment_extraction",
+        replace_existing=True,
+    )
+
+    # Extract commitments + auto-memory from new Read.ai meetings in Supabase — every 30 minutes
+    scheduler.add_job(
+        _run_meeting_extraction,
+        "interval",
+        minutes=30,
+        id="meeting_extraction",
         replace_existing=True,
     )
 
@@ -291,6 +300,24 @@ async def _run_commitment_extraction() -> None:
             )
     except Exception as exc:
         logger.error("_run_commitment_extraction failed: %s", exc)
+
+
+async def _run_meeting_extraction() -> None:
+    """Extract commitments and auto-save memories from new Read.ai meetings in Supabase."""
+    try:
+        from .commitment_extractor import extract_from_supabase_meetings
+        summary = await extract_from_supabase_meetings()
+        if summary.get("skipped"):
+            return
+        if summary["meetings_processed"]:
+            logger.info(
+                "Meeting extraction: %d meetings, +%d commitments, %d memories",
+                summary["meetings_processed"],
+                summary["new_commitments"],
+                summary["memories_saved"],
+            )
+    except Exception as exc:
+        logger.error("_run_meeting_extraction failed: %s", exc)
 
 
 async def _check_deals_without_followup() -> None:
