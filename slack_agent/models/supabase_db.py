@@ -44,7 +44,7 @@ def _participants_to_str(value) -> str:
         names = []
         for p in value:
             if isinstance(p, dict):
-                names.append(p.get("name") or p.get("email") or "")
+                names.append(str(p.get("name") or p.get("email") or ""))
             else:
                 names.append(str(p))
         return ", ".join(n for n in names if n)

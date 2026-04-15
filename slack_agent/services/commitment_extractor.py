@@ -393,7 +393,7 @@ async def _identify_client_from_supabase_meeting(meeting: dict) -> str:
     topics_text = ""
     if isinstance(topics_raw, list):
         topics_text = " ".join(
-            t if isinstance(t, str) else t.get("name", str(t))
+            t if isinstance(t, str) else str(t.get("name") or t.get("label") or t)
             for t in topics_raw
         ).lower()
 
@@ -544,7 +544,10 @@ async def extract_from_supabase_meetings() -> dict:
             # Participants
             parts_raw = meeting.get("participants") or []
             if isinstance(parts_raw, list):
-                names = [p.get("name") or p.get("email") or "" for p in parts_raw if isinstance(p, dict)]
+                names = [
+                    str(p.get("name") or p.get("email") or "")
+                    for p in parts_raw if isinstance(p, dict)
+                ]
                 participants_str = ", ".join(n for n in names if n)
             else:
                 participants_str = str(parts_raw)
@@ -553,7 +556,7 @@ async def extract_from_supabase_meetings() -> dict:
             topics_raw = meeting.get("topics") or []
             if isinstance(topics_raw, list):
                 topics_str = ", ".join(
-                    t if isinstance(t, str) else t.get("name", str(t))
+                    t if isinstance(t, str) else str(t.get("name") or t.get("label") or t)
                     for t in topics_raw[:6]
                 )
             else:
@@ -563,7 +566,7 @@ async def extract_from_supabase_meetings() -> dict:
             kq_raw = meeting.get("key_questions") or []
             if isinstance(kq_raw, list):
                 kq_str = " | ".join(
-                    q if isinstance(q, str) else q.get("text", str(q))
+                    q if isinstance(q, str) else str(q.get("text") or q.get("content") or q)
                     for q in kq_raw[:3]
                 )
             else:

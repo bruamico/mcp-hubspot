@@ -172,7 +172,7 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
             if topics_raw:
                 if isinstance(topics_raw, list):
                     topics_str = ", ".join(
-                        t if isinstance(t, str) else t.get("name", str(t))
+                        t if isinstance(t, str) else str(t.get("name") or t.get("label") or t)
                         for t in topics_raw[:6]
                     )
                 else:
@@ -188,7 +188,7 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
             if kq_raw:
                 if isinstance(kq_raw, list):
                     kq_str = " | ".join(
-                        q if isinstance(q, str) else q.get("text", str(q))
+                        q if isinstance(q, str) else str(q.get("text") or q.get("content") or q)
                         for q in kq_raw[:3]
                     )
                 else:
