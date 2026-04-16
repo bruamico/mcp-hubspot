@@ -612,3 +612,95 @@ async def update_scheduled_report_last_run(report_id: int) -> None:
     await sb.table("scheduled_reports").update({
         "last_run_at": datetime.now(tz=timezone.utc).isoformat(),
     }).eq("id", report_id).execute()
+
+
+# ---------------------------------------------------------------------------
+# RBAC — User permissions
+# ---------------------------------------------------------------------------
+
+async def get_user_role(slack_user_id: str) -> str:
+    """Return the role for a Slack user: 'admin' or 'user' (default).
+    ADMIN_SLACK_USER_ID env var bootstraps the first admin without a DB entry."""
+    import os as _os
+    if slack_user_id and slack_user_id == _os.getenv("ADMIN_SLACK_USER_ID", ""):
+        return "admin"
+    try:
+        sb = await _sb()
+        result = await sb.table("user_permissions").select("role").eq(
+            "slack_user_id", slack_user_id
+        ).execute()
+        if result.data:
+            return result.data[0]["role"]
+    except Exception as exc:
+        logger.warning("get_user_role failed: %s", exc)
+    return "user"
+
+
+async def set_user_role(slack_user_id: str, role: str, granted_by: str = "") -> None:
+    """Create or update a user's role."""
+    sb = await _sb()
+    await sb.table("user_permissions").upsert({
+        "slack_user_id": slack_user_id,
+        "role":          role,
+        "granted_by":    granted_by,
+    }).execute()
+
+
+async def is_admin(slack_user_id: str) -> bool:
+    """Return True if the user has admin role."""
+    return await get_user_role(slack_user_id) == "admin"
+
+
+async def list_user_permissions() -> list[dict]:
+    """Return all rows from user_permissions."""
+    sb = await _sb()
+    result = await sb.table("user_permissions").select(
+        "slack_user_id,role,granted_by,created_at"
+    ).order("created_at").execute()
+    return result.data or []
+
+
+# ---------------------------------------------------------------------------
+# Dynamic configurations
+# ---------------------------------------------------------------------------
+
+async def get_config(key: str) -> str | None:
+    """Return the stored value for a config key, or None if absent."""
+    try:
+        sb = await _sb()
+        result = await sb.table("dynamic_configs").select("value").eq("key", key).execute()
+        if result.data:
+            return result.data[0]["value"]
+    except Exception as exc:
+        logger.warning("get_config failed: %s", exc)
+    return None
+
+
+async def set_config(key: str, value: str, created_by: str = "") -> None:
+    """Create or update a config entry."""
+    sb = await _sb()
+    await sb.table("dynamic_configs").upsert({
+        "key":        key,
+        "value":      value,
+        "created_by": created_by,
+        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }).execute()
+
+
+async def list_configs() -> list[dict]:
+    """Return all config entries ordered by key."""
+    sb = await _sb()
+    result = await sb.table("dynamic_configs").select(
+        "key,value,created_by,updated_at"
+    ).order("key").execute()
+    return result.data or []
+
+
+async def delete_config(key: str) -> bool:
+    """Delete a config entry. Returns True if it existed."""
+    sb = await _sb()
+    result = await sb.table("dynamic_configs").select("key").eq("key", key).execute()
+    if not result.data:
+        return False
+    await sb.table("dynamic_configs").delete().eq("key", key).execute()
+    return True

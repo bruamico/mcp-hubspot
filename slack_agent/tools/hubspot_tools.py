@@ -678,7 +678,18 @@ HUBSPOT_TOOL_DEFINITIONS = [
 # Executor
 # ---------------------------------------------------------------------------
 
-async def execute_hubspot_tool(tool_name: str, tool_input: dict) -> str:
+# Tools that require admin role: writes and private communication data
+_ADMIN_ONLY_TOOLS = {
+    "hubspot_create_contact",
+    "hubspot_update_contact",
+    "hubspot_create_company",
+    "hubspot_update_company",
+    "hubspot_get_recent_conversations",
+    "hubspot_get_ticket_threads",
+}
+
+
+async def execute_hubspot_tool(tool_name: str, tool_input: dict, context: dict | None = None) -> str:
     """Run HubSpot tools in a thread pool to avoid blocking the asyncio event loop.
 
     All HubSpotDirectClient methods use the synchronous hubspot-api-client / urllib
@@ -686,6 +697,18 @@ async def execute_hubspot_tool(tool_name: str, tool_input: dict) -> str:
     event loop and cause health-check failures on Fly.io.
     """
     import asyncio
+
+    # RBAC: check admin permission for sensitive / write operations
+    if tool_name in _ADMIN_ONLY_TOOLS:
+        user_id = (context or {}).get("user_id", "")
+        if user_id:  # empty = internal/scheduler call, always allowed
+            from ..models.database import is_admin
+            if not await is_admin(user_id):
+                return (
+                    "⛔ Acesso negado. Você não tem permissão para acessar esses dados. "
+                    "Apenas administradores podem executar esta operação."
+                )
+
     return await asyncio.to_thread(_execute_hubspot_sync, tool_name, tool_input)
 
 

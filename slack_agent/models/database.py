@@ -146,6 +146,23 @@ async def init_db() -> None:
                 PRIMARY KEY (channel_id, workspace)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_permissions (
+                slack_user_id TEXT PRIMARY KEY,
+                role          TEXT NOT NULL DEFAULT 'user',
+                granted_by    TEXT,
+                created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS dynamic_configs (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                created_by TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         # Migrations: safely add columns that may be missing in older DB instances.
         # ALTER TABLE ADD COLUMN fails if the column exists — catch and ignore.
@@ -905,6 +922,91 @@ async def update_scheduled_report_last_run(report_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# RBAC — User permissions
+# ---------------------------------------------------------------------------
+
+async def get_user_role(slack_user_id: str) -> str:
+    """Return role for a Slack user: 'admin' or 'user' (default).
+    ADMIN_SLACK_USER_ID env var bootstraps the first admin without a DB entry."""
+    if slack_user_id and slack_user_id == os.getenv("ADMIN_SLACK_USER_ID", ""):
+        return "admin"
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT role FROM user_permissions WHERE slack_user_id = ?", (slack_user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else "user"
+
+
+async def set_user_role(slack_user_id: str, role: str, granted_by: str = "") -> None:
+    """Create or update a user's role."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO user_permissions (slack_user_id, role, granted_by) VALUES (?, ?, ?)",
+            (slack_user_id, role, granted_by),
+        )
+        await db.commit()
+
+
+async def is_admin(slack_user_id: str) -> bool:
+    """Return True if the user has admin role."""
+    return await get_user_role(slack_user_id) == "admin"
+
+
+async def list_user_permissions() -> list[dict]:
+    """Return all rows from user_permissions."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT slack_user_id, role, granted_by, created_at FROM user_permissions ORDER BY created_at"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic configurations
+# ---------------------------------------------------------------------------
+
+async def get_config(key: str) -> str | None:
+    """Return the stored value for a config key, or None if absent."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT value FROM dynamic_configs WHERE key = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def set_config(key: str, value: str, created_by: str = "") -> None:
+    """Create or update a config entry."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO dynamic_configs (key, value, created_by, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
+            (key, value, created_by),
+        )
+        await db.commit()
+
+
+async def list_configs() -> list[dict]:
+    """Return all config entries ordered by key."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT key, value, created_by, updated_at FROM dynamic_configs ORDER BY key"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def delete_config(key: str) -> bool:
+    """Delete a config entry. Returns True if it existed."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM dynamic_configs WHERE key = ?", (key,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
 # Supabase backend override
 # When SUPABASE_URL is set, all functions above are replaced with the
 # Supabase equivalents from supabase_db.py (same signatures, no code changes
@@ -932,6 +1034,10 @@ if os.getenv("SUPABASE_URL"):
             get_overdue_commitments, get_due_soon_commitments,
             list_scheduled_reports, add_scheduled_report,
             delete_scheduled_report, update_scheduled_report_last_run,
+            # RBAC
+            get_user_role, set_user_role, is_admin, list_user_permissions,
+            # Dynamic configs
+            get_config, set_config, list_configs, delete_config,
         )
         logger.info("Supabase backend loaded — SQLite functions overridden")
     except ImportError as exc:

@@ -10,6 +10,7 @@ from typing import Any
 
 import anthropic
 
+from .tools.admin_tools import ADMIN_TOOL_DEFINITIONS, execute_admin_tool
 from .tools.commitment_tools import COMMITMENT_TOOL_DEFINITIONS, execute_commitment_tool
 from .tools.gcal_tools import GCAL_TOOL_DEFINITIONS, execute_gcal_tool
 from .tools.gmail_tools import GMAIL_TOOL_DEFINITIONS, execute_gmail_tool
@@ -29,7 +30,8 @@ MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "15"))
 MAX_TOOL_RESULT_CHARS = int(os.getenv("AGENT_MAX_TOOL_RESULT_CHARS", "4000"))
 
 ALL_TOOL_DEFINITIONS = (
-    COMMITMENT_TOOL_DEFINITIONS
+    ADMIN_TOOL_DEFINITIONS
+    + COMMITMENT_TOOL_DEFINITIONS
     + GCAL_TOOL_DEFINITIONS
     + GMAIL_TOOL_DEFINITIONS
     + GRANOLA_TOOL_DEFINITIONS
@@ -85,6 +87,11 @@ _REPORT_TOOL_NAMES = {
     "commitment_done",
     "commitment_update",
     "commitment_overdue",
+    "get_open_tasks",
+    "mark_task_resolved",
+    # Admin
+    "manage_permissions",
+    "manage_config",
 }
 
 _REPORT_KEYWORDS = {
@@ -121,21 +128,22 @@ def _truncate(text: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
     return text[:max_chars] + f"\n[... resultado truncado — {len(text)} chars total]"
 
 
-async def _execute_tool(tool_name: str, tool_input: dict) -> str:
+async def _execute_tool(tool_name: str, tool_input: dict, context: dict | None = None) -> str:
     """Route tool call to the correct executor."""
-    granola_names = {t["name"] for t in GRANOLA_TOOL_DEFINITIONS}
-    hubspot_names = {t["name"] for t in HUBSPOT_TOOL_DEFINITIONS}
-    memory_names = {t["name"] for t in MEMORY_TOOL_DEFINITIONS}
-    gcal_names = {t["name"] for t in GCAL_TOOL_DEFINITIONS}
-    productive_names = {t["name"] for t in PRODUCTIVE_TOOL_DEFINITIONS}
-    readai_names = {t["name"] for t in READAI_TOOL_DEFINITIONS}
-    slack_names = {t["name"] for t in SLACK_TOOL_DEFINITIONS}
-
-    gmail_names = {t["name"] for t in GMAIL_TOOL_DEFINITIONS}
-
+    admin_names      = {t["name"] for t in ADMIN_TOOL_DEFINITIONS}
     commitment_names = {t["name"] for t in COMMITMENT_TOOL_DEFINITIONS}
+    gcal_names       = {t["name"] for t in GCAL_TOOL_DEFINITIONS}
+    gmail_names      = {t["name"] for t in GMAIL_TOOL_DEFINITIONS}
+    granola_names    = {t["name"] for t in GRANOLA_TOOL_DEFINITIONS}
+    hubspot_names    = {t["name"] for t in HUBSPOT_TOOL_DEFINITIONS}
+    memory_names     = {t["name"] for t in MEMORY_TOOL_DEFINITIONS}
+    productive_names = {t["name"] for t in PRODUCTIVE_TOOL_DEFINITIONS}
+    readai_names     = {t["name"] for t in READAI_TOOL_DEFINITIONS}
+    slack_names      = {t["name"] for t in SLACK_TOOL_DEFINITIONS}
 
-    if tool_name in commitment_names:
+    if tool_name in admin_names:
+        return await execute_admin_tool(tool_name, tool_input, context=context)
+    elif tool_name in commitment_names:
         return await execute_commitment_tool(tool_name, tool_input)
     elif tool_name in gcal_names:
         return await execute_gcal_tool(tool_name, tool_input)
@@ -144,7 +152,7 @@ async def _execute_tool(tool_name: str, tool_input: dict) -> str:
     elif tool_name in granola_names:
         return await execute_granola_tool(tool_name, tool_input)
     elif tool_name in hubspot_names:
-        return await execute_hubspot_tool(tool_name, tool_input)
+        return await execute_hubspot_tool(tool_name, tool_input, context=context)
     elif tool_name in memory_names:
         return await execute_memory_tool(tool_name, tool_input)
     elif tool_name in productive_names:
@@ -177,6 +185,7 @@ async def run_agent(
     user_message: str,
     history: list[dict],
     system_prompt: str,
+    context: dict | None = None,
 ) -> str:
     """
     Run the agent loop and return the final text response.
@@ -185,6 +194,7 @@ async def run_agent(
         user_message:  The raw text from the user (already stripped of @mentions).
         history:       Previous messages in the thread (role/content dicts).
         system_prompt: The system prompt for Claude.
+        context:       Optional request context, e.g. {"user_id": "U01ABC"}.
 
     Returns:
         Claude's final text response.
@@ -229,7 +239,7 @@ async def run_agent(
                     continue
 
                 logger.info("Tool call: %s %s", block.name, block.input)
-                result_text = await _execute_tool(block.name, block.input)
+                result_text = await _execute_tool(block.name, block.input, context=context)
                 result_text = _truncate(result_text)
                 logger.debug("Tool result (%d chars): %s…", len(result_text), result_text[:200])
 

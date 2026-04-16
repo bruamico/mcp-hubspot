@@ -59,6 +59,7 @@ async def _process_message(event: dict, say, client) -> None:
     thread_ts = event.get("thread_ts") or event["ts"]
     raw_text = event.get("text") or ""
     user_message = _strip_mention(raw_text)
+    user_id = event.get("user", "")
 
     if not user_message:
         return
@@ -120,6 +121,7 @@ async def _process_message(event: dict, say, client) -> None:
                 user_message=user_message,
                 history=history,
                 system_prompt=SYSTEM_PROMPT,
+                context={"user_id": user_id},
             )
 
         await memory.add_message(channel, thread_ts, "user", user_message)

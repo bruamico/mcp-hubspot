@@ -153,6 +153,47 @@ COMMITMENT_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": "get_open_tasks",
+        "description": (
+            "Lista todas as tarefas/pedidos abertos (status pending) de um cliente. "
+            "Equivalente a commitment_list com status='pending'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "client_slug": {
+                    "type": "string",
+                    "description": "Chave do cliente (ex: 'galena'). Omita para todos.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Máximo de itens (padrão: 30)",
+                },
+            },
+        },
+    },
+    {
+        "name": "mark_task_resolved",
+        "description": (
+            "Marca uma tarefa/pedido como resolvido (done). "
+            "Equivalente a commitment_done com status='done'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "integer",
+                    "description": "ID da tarefa (obtido via get_open_tasks ou commitment_list)",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Observação sobre a entrega (opcional)",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
 ]
 
 
@@ -168,6 +209,20 @@ async def execute_commitment_tool(tool_name: str, tool_input: dict) -> str:
             return await _update(tool_input)
         elif tool_name == "commitment_overdue":
             return await _overdue(tool_input)
+        elif tool_name == "get_open_tasks":
+            # Alias: map client_slug → client_key, force status=pending
+            return await _list({
+                "client_key": tool_input.get("client_slug"),
+                "status": "pending",
+                "limit": tool_input.get("limit", 30),
+            })
+        elif tool_name == "mark_task_resolved":
+            # Alias: map task_id → id, force status=done
+            return await _done({
+                "id": tool_input.get("task_id"),
+                "status": "done",
+                "notes": tool_input.get("notes", ""),
+            })
         else:
             return f"Ferramenta desconhecida: {tool_name}"
     except Exception as exc:
