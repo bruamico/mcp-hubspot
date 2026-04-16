@@ -8,6 +8,7 @@ primary_region = "gru"
   TZ = "America/Sao_Paulo"
   HERMES_CONFIG = "/app/config.yaml"
   HERMES_SOUL = "/app/SOUL.md"
+  PYTHONUNBUFFERED = "1"
 
 [[mounts]]
   source = "hermes_data"
