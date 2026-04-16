@@ -1,0 +1,53 @@
+name: Deploy Hermes Agent to Fly.io
+
+on:
+  push:
+    branches:
+      - claude/deploy-hermes-agent-gQdQD
+    paths:
+      - 'hermes-tropical-hub/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Hermes Agent
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hermes-tropical-hub
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Create app if not exists
+        run: |
+          fly apps list | grep -q "hermes-tropical-hub" || fly apps create hermes-tropical-hub
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Create volume if not exists
+        run: |
+          fly volumes list -a hermes-tropical-hub | grep -q "hermes_data" || \
+          fly volumes create hermes_data --size 1 --region gru -a hermes-tropical-hub --yes
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Set secrets
+        run: |
+          fly secrets set \
+            TROPICAL_BOT_TOKEN="${{ secrets.TROPICAL_BOT_TOKEN }}" \
+            TROPICAL_APP_TOKEN="${{ secrets.TROPICAL_APP_TOKEN }}" \
+            OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
+            HUBSPOT_TOKEN="${{ secrets.HUBSPOT_TOKEN }}" \
+            -a hermes-tropical-hub
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Deploy
+        run: fly deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
