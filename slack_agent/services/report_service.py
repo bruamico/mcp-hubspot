@@ -146,7 +146,7 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
         if not rows:
             all_rows = await get_meetings_in_window(since_iso, limit=limit)
             # Keep only rows that have any loose match to the client key
-            # (partial word in title/participants) so we don't flood unrelated meetings
+            # (partial word in title/participants/summary)
             key_lower = client_key.lower()
             rows = [
                 r for r in all_rows
@@ -154,11 +154,8 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
                 or key_lower in (r.get("participants") or "").lower()
                 or key_lower in (r.get("summary") or "").lower()[:200]
             ]
-            # If still nothing, return the window summary (raw, unfiltered) capped at 5
             if not rows:
-                rows = all_rows[:5]
-                if not rows:
-                    return "Nenhuma reunião encontrada no Read.ai para esse cliente."
+                return "Nenhuma reunião encontrada no Read.ai para esse cliente."
 
         parts = []
         for r in rows:
