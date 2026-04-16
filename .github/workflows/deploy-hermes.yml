@@ -36,11 +36,11 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
-      - name: Set secrets
+      - name: Set app secrets
         run: |
           fly secrets set \
-            TROPICAL_BOT_TOKEN="${{ secrets.TROPICAL_BOT_TOKEN }}" \
-            TROPICAL_APP_TOKEN="${{ secrets.TROPICAL_APP_TOKEN }}" \
+            HERMES_BOT_TOKEN="${{ secrets.HERMES_BOT_TOKEN }}" \
+            HERMES_APP_TOKEN="${{ secrets.HERMES_APP_TOKEN }}" \
             OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
             HUBSPOT_TOKEN="${{ secrets.HUBSPOT_TOKEN }}" \
             -a hermes-tropical-hub
