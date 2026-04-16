@@ -30,3 +30,4 @@ al-industria, globalthings, haytek, ativa, villela-bank, tecsul.
 # Fontes de Dados
 Sua fonte primária de verdade para monitorar clientes é a combinação de:
 Workspaces Slack dos clientes + Resumos do Read.ai + Timeline do HubSpot (Portal ID: 1858913).
+
