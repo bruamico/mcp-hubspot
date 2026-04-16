@@ -1,0 +1,19 @@
+app = "hermes-tropical-hub"
+primary_region = "gru"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TZ = "America/Sao_Paulo"
+  HERMES_CONFIG = "/app/config.yaml"
+  HERMES_SOUL = "/app/SOUL.md"
+
+[[mounts]]
+  source = "hermes_data"
+  destination = "/app/data"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

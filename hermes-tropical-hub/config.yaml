@@ -1,0 +1,24 @@
+# Configuração do Hermes Agent — Tropical Hub
+agent:
+  name: "Hermes"
+  model: "gpt-4o"
+  temperature: 0.2
+
+memory:
+  provider: "local"
+  path: "/app/data/hermes_memory"
+
+gateway:
+  slack:
+    enabled: true
+    app_token: "${TROPICAL_APP_TOKEN}"
+    bot_token: "${TROPICAL_BOT_TOKEN}"
+    socket_mode: true
+
+skills:
+  directory: "/app/skills"
+  auto_load: true
+
+plugins:
+  enabled: true
+  directory: "/app/plugins"
