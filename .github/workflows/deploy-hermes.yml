@@ -6,6 +6,7 @@ on:
       - claude/deploy-hermes-agent-gQdQD
     paths:
       - 'hermes-tropical-hub/**'
+      - '.github/workflows/deploy-hermes.yml'
   workflow_dispatch:
 
 jobs:
@@ -25,20 +26,20 @@ jobs:
 
       - name: Create app if not exists
         run: |
-          fly apps list | grep -q "hermes-tropical-hub" || fly apps create hermes-tropical-hub
+          flyctl apps list | grep -q "hermes-tropical-hub" || flyctl apps create hermes-tropical-hub
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
       - name: Create volume if not exists
         run: |
-          fly volumes list -a hermes-tropical-hub | grep -q "hermes_data" || \
-          fly volumes create hermes_data --size 1 --region gru -a hermes-tropical-hub --yes
+          flyctl volumes list -a hermes-tropical-hub | grep -q "hermes_data" || \
+          flyctl volumes create hermes_data --size 1 --region gru -a hermes-tropical-hub --yes
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
       - name: Set app secrets
         run: |
-          fly secrets set \
+          flyctl secrets set \
             HERMES_BOT_TOKEN="${{ secrets.HERMES_BOT_TOKEN }}" \
             HERMES_APP_TOKEN="${{ secrets.HERMES_APP_TOKEN }}" \
             OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
@@ -48,6 +49,6 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
       - name: Deploy
-        run: fly deploy --remote-only
+        run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
