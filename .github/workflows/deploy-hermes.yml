@@ -25,8 +25,7 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Create app if not exists
-        run: |
-          flyctl apps list | grep -q "hermes-tropical-hub" || flyctl apps create hermes-tropical-hub
+        run: flyctl apps list | grep -q "hermes-tropical-hub" || flyctl apps create hermes-tropical-hub --org personal
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -40,8 +39,8 @@ jobs:
       - name: Set app secrets
         run: |
           flyctl secrets set \
-            HERMES_BOT_TOKEN="${{ secrets.HERMES_BOT_TOKEN }}" \
-            HERMES_APP_TOKEN="${{ secrets.HERMES_APP_TOKEN }}" \
+            SLACK_BOT_TOKEN="${{ secrets.SLACK_BOT_TOKEN }}" \
+            SLACK_APP_TOKEN="${{ secrets.SLACK_APP_TOKEN }}" \
             OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
             HUBSPOT_TOKEN="${{ secrets.HUBSPOT_TOKEN }}" \
             -a hermes-tropical-hub
@@ -49,6 +48,6 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
       - name: Deploy
-        run: flyctl deploy --remote-only
+        run: flyctl deploy --remote-only -a hermes-tropical-hub
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
