@@ -3,7 +3,6 @@ set -e
 
 APP="hermes-tropical-hub"
 REGION="gru"
-SOURCE_APP="tropical-bot-v2"  # where existing secrets live
 
 echo "=== Hermes Agent — Deploy no Fly.io ==="
 echo ""
@@ -13,46 +12,37 @@ echo "[ 1/5 ] Login no Fly.io..."
 fly auth login
 echo ""
 
-# 2. Criar o app (ignora erro se já existir)
+# 2. Criar o app
 echo "[ 2/5 ] Criando app '$APP'..."
 fly apps create "$APP" --org personal 2>/dev/null || echo "App já existe, continuando..."
 echo ""
 
-# 3. Criar volume persistente (ignora erro se já existir)
+# 3. Criar volume persistente
 echo "[ 3/5 ] Criando volume persistente 'hermes_data' em $REGION..."
 fly volumes create hermes_data --size 1 --region "$REGION" -a "$APP" 2>/dev/null || echo "Volume já existe, continuando..."
 echo ""
 
-# 4. Migrar secrets do app de origem
-echo "[ 4/5 ] Copiando secrets de '$SOURCE_APP' para '$APP'..."
-echo ""
-echo "  Buscando TROPICAL_BOT_TOKEN..."
-BOT_TOKEN=$(fly secrets list -a "$SOURCE_APP" --json 2>/dev/null | python3 -c "
-import sys, json
-secrets = json.load(sys.stdin)
-for s in secrets:
-    if s.get('Name') == 'TROPICAL_BOT_TOKEN':
-        print(s.get('Digest', ''))
-" 2>/dev/null || echo "")
-
-echo ""
-echo "  ATENÇÃO: Os secrets precisam ser definidos manualmente."
-echo "  Execute o comando abaixo substituindo pelos valores reais:"
+# 4. Configurar secrets
+# IMPORTANTE: Hermes espera SLACK_BOT_TOKEN e SLACK_APP_TOKEN
+# Se seus tokens estão salvos como TROPICAL_BOT_TOKEN / TROPICAL_APP_TOKEN, use os mesmos valores
+echo "[ 4/5 ] Configure os secrets abaixo e pressione ENTER para continuar:"
 echo ""
 echo "  fly secrets set -a $APP \\"
-echo "    TROPICAL_BOT_TOKEN=xoxb-... \\"
-echo "    TROPICAL_APP_TOKEN=xapp-... \\"
-echo "    OPENAI_API_KEY=sk-... \\"
-echo "    HUBSPOT_TOKEN=pat-..."
+echo "    TROPICAL_BOT_TOKEN=xoxb-...    # token do bot (começa com xoxb-)"
+echo "    TROPICAL_APP_TOKEN=xapp-...    # token socket mode (começa com xapp-)"
+echo "    OPENAI_API_KEY=sk-...          # chave OpenAI"
+echo "    HUBSPOT_TOKEN=pat-...          # token HubSpot"
 echo ""
-echo "  (Busque os valores em: fly secrets list -a $SOURCE_APP)"
+echo "  (Valores estão em: fly secrets list -a tropical-bot-v2)"
 echo ""
-read -p "Pressione ENTER após configurar os secrets para continuar com o deploy..."
+read -p "Pressione ENTER após configurar os secrets..."
 
 # 5. Deploy
 echo "[ 5/5 ] Fazendo deploy..."
 fly deploy -a "$APP"
 echo ""
 echo "=== Deploy concluído! ==="
-echo "Logs em tempo real: fly logs -a $APP"
-echo "Status:             fly status -a $APP"
+echo ""
+echo "Logs ao vivo:  fly logs -a $APP"
+echo "Status:        fly status -a $APP"
+echo "SSH na máquina: fly ssh console -a $APP"

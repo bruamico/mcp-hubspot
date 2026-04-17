@@ -6,13 +6,12 @@ primary_region = "gru"
 
 [env]
   TZ = "America/Sao_Paulo"
-  HERMES_CONFIG = "/app/config.yaml"
-  HERMES_SOUL = "/app/SOUL.md"
   PYTHONUNBUFFERED = "1"
+  HERMES_HOME = "/opt/data"
 
 [[mounts]]
   source = "hermes_data"
-  destination = "/app/data"
+  destination = "/opt/data"
 
 [[vm]]
   memory = "1gb"

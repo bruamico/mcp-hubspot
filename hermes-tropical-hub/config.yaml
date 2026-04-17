@@ -1,24 +1,43 @@
-# Configuração do Hermes Agent — Tropical Hub
-agent:
-  name: "Hermes"
+# Modelo LLM
+model:
+  provider: "openai"
   model: "gpt-4o"
-  temperature: 0.2
 
+# Comportamento do agente
+agent:
+  max_turns: 50
+  reasoning_effort: "medium"
+
+# Memória persistente
 memory:
-  provider: "local"
-  path: "/app/data/hermes_memory"
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
 
-gateway:
+# Configuração Slack (Socket Mode)
+slack:
+  bot_token: "${TROPICAL_BOT_TOKEN}"
+  app_token: "${TROPICAL_APP_TOKEN}"
+
+# Comportamento no Slack
+platforms:
   slack:
-    enabled: true
-    app_token: "${TROPICAL_APP_TOKEN}"
-    bot_token: "${TROPICAL_BOT_TOKEN}"
-    socket_mode: true
+    reply_to_mode: "first"
+    extra:
+      reply_in_thread: true
+      reply_broadcast: false
 
-skills:
-  directory: "/app/skills"
-  auto_load: true
+# Timezone
+timezone: "America/Sao_Paulo"
 
-plugins:
+# Compressão de contexto
+compression:
   enabled: true
-  directory: "/app/plugins"
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+
+# Aprovações (auto para uso no Slack)
+approvals:
+  mode: "off"

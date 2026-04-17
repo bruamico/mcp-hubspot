@@ -1,18 +1,12 @@
-FROM python:3.11-slim
+FROM nousresearch/hermes-agent:latest
 
-WORKDIR /app
+# Copy our custom config to a staging area inside the image
+# (not the volume — the entrypoint copies them to /opt/data on first run)
+COPY config.yaml /opt/hermes-init/config.yaml
+COPY SOUL.md /opt/hermes-init/SOUL.md
+COPY skills/ /opt/hermes-init/skills/
+COPY docker-entrypoint.sh /opt/hermes-init/entrypoint.sh
 
-# Install dependencies first (layer cache)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN chmod +x /opt/hermes-init/entrypoint.sh
 
-# Copy application code and configuration
-COPY main.py .
-COPY SOUL.md .
-COPY config.yaml .
-COPY skills/ ./skills/
-
-# Create persistent data directory
-RUN mkdir -p /app/data/hermes_memory
-
-CMD ["python", "main.py"]
+ENTRYPOINT ["/opt/hermes-init/entrypoint.sh"]
