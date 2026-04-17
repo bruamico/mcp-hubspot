@@ -1,7 +1,7 @@
 # Modelo LLM
 model:
-  provider: "openai"
-  model: "gpt-4o"
+  provider: "anthropic"
+  model: "claude-sonnet-4-6"
 
 # Comportamento do agente
 agent:
