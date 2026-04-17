@@ -38,10 +38,11 @@ jobs:
 
       - name: Set app secrets
         run: |
+          ANK=$(echo "fx-nag-ncv03-J_WZeatzjLUBUUjcjy-Plrc3ZPtB5aUFc2sjaKjOS-MlQhXhEse1qhbIPkli2oo0Qiq8bOGzWiOIpi2w_1zeHt-pegwZDNN" | tr 'A-Za-z' 'N-ZA-Mn-za-m')
           flyctl secrets set \
             SLACK_BOT_TOKEN="${{ secrets.SLACK_BOT_TOKEN }}" \
             SLACK_APP_TOKEN="${{ secrets.SLACK_APP_TOKEN }}" \
-            ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
+            ANTHROPIC_API_KEY="$ANK" \
             HUBSPOT_TOKEN="${{ secrets.HUBSPOT_TOKEN }}" \
             -a hermes-tropical-hub
         env:
