@@ -31,9 +31,11 @@ platforms:
 # Timezone
 timezone: "America/Sao_Paulo"
 
-# Compressão de contexto desativada — evita 401 do auxiliary provider
+# Compressão usa OpenRouter como provider auxiliar (evita 401 no Anthropic)
 compression:
-  enabled: false
+  enabled: true
+  threshold_tokens: 8000
+  target_tokens: 4000
 
 # Aprovações (auto para uso no Slack)
 approvals:
