@@ -1,7 +1,7 @@
-# Modelo LLM
+# Modelo LLM — roteado via OpenRouter para evitar 401 direto no Anthropic
 model:
-  provider: "anthropic"
-  model: "claude-sonnet-4-6"
+  provider: "openrouter"
+  model: "anthropic/claude-sonnet-4-6"
 
 # Comportamento do agente
 agent:
