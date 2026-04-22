@@ -4,19 +4,17 @@ set -e
 DATA_DIR="/opt/data"
 INIT_DIR="/opt/hermes-init"
 
-# On first run, populate /opt/data with our custom config
+# On first run, create directory structure
 if [ ! -f "$DATA_DIR/config.yaml" ]; then
     echo "[hermes-init] First run detected — initializing $DATA_DIR..."
     mkdir -p "$DATA_DIR/skills" "$DATA_DIR/memories" "$DATA_DIR/sessions"
-    cp "$INIT_DIR/config.yaml" "$DATA_DIR/config.yaml"
-    cp "$INIT_DIR/SOUL.md" "$DATA_DIR/SOUL.md"
-    cp -r "$INIT_DIR/skills/." "$DATA_DIR/skills/" 2>/dev/null || true
-    echo "[hermes-init] Done."
-else
-    # Always sync skills and SOUL.md so updates take effect on redeploy
-    cp "$INIT_DIR/SOUL.md" "$DATA_DIR/SOUL.md"
-    cp -r "$INIT_DIR/skills/." "$DATA_DIR/skills/" 2>/dev/null || true
 fi
+
+# Always sync config.yaml, SOUL.md and skills so updates take effect on redeploy
+cp "$INIT_DIR/config.yaml" "$DATA_DIR/config.yaml"
+cp "$INIT_DIR/SOUL.md" "$DATA_DIR/SOUL.md"
+cp -r "$INIT_DIR/skills/." "$DATA_DIR/skills/" 2>/dev/null || true
+echo "[hermes-init] Config, SOUL.md and skills synced."
 
 # Patch _try_anthropic() to hard-block Anthropic calls unless explicitly configured.
 # This prevents 401 errors when OpenRouter is the configured provider.
