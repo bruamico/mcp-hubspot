@@ -129,6 +129,7 @@ async def _fetch_external_slack(client_key: str, hours_back: int) -> str:
 async def _fetch_readai(client_key: str, hours_back: int) -> str:
     try:
         import datetime as _dt
+        import re as _re
         from ..models.database import search_meetings, get_meetings_in_window
 
         # Compute ISO cutoff for SQL-level filtering
@@ -138,22 +139,27 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
         # Scale limit with the requested window
         limit = max(20, min(100, hours_back // 2))
 
-        # Primary: keyword search within the time window
-        rows = await search_meetings(client_key, limit=limit, since_iso=since_iso)
+        key_lower = client_key.lower()
+        # Word-boundary pattern so "ativa" doesn't match "ativação" / "está ativa"
+        # and generic Portuguese words inside summaries don't bleed into other clients.
+        key_pattern = _re.compile(r'\b' + _re.escape(key_lower) + r'\b')
 
-        # Fallback: if keyword search returns nothing, use window-only query
-        # (meeting title may not contain the client name)
+        def _matches(row: dict) -> bool:
+            """True if client_key appears as a whole word in title, participants, or summary."""
+            return bool(
+                key_pattern.search((row.get("title") or "").lower())
+                or key_pattern.search((row.get("participants") or "").lower())
+                or key_pattern.search((row.get("summary") or "").lower()[:400])
+            )
+
+        # Primary: DB keyword search (broad LIKE) then refine with word-boundary check
+        rows = await search_meetings(client_key, limit=limit, since_iso=since_iso)
+        rows = [r for r in rows if _matches(r)]
+
+        # Fallback: scan all meetings in window and apply the same word-boundary filter
         if not rows:
             all_rows = await get_meetings_in_window(since_iso, limit=limit)
-            # Keep only rows that have any loose match to the client key
-            # (partial word in title/participants/summary)
-            key_lower = client_key.lower()
-            rows = [
-                r for r in all_rows
-                if key_lower in (r.get("title") or "").lower()
-                or key_lower in (r.get("participants") or "").lower()
-                or key_lower in (r.get("summary") or "").lower()[:200]
-            ]
+            rows = [r for r in all_rows if _matches(r)]
             if not rows:
                 return "Nenhuma reunião encontrada no Read.ai para esse cliente."
 
