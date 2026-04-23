@@ -29,6 +29,9 @@ hubspot-api-client>=11.1.0
 # Env
 python-dotenv>=1.0.1
 
-# Semantic memory (numpy only — sentence-transformers not needed in Slack agent;
-# embedding generation falls back gracefully when model is unavailable)
+# Semantic memory
+# - openai: used for text-embedding-3-small (pgvector semantic search)
+#   Set OPENAI_API_KEY to activate. Falls back to keyword search if absent.
+# - numpy: used by legacy local-embedding path (sentence-transformers fallback)
+openai>=1.14.0
 numpy>=1.24.0

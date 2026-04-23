@@ -277,14 +277,20 @@ async def save_memory(
     source: str = "agent", embedding: bytes | None = None,
 ) -> int:
     sb = await _sb()
-    # embedding (BLOB in SQLite → vector(1536) in Supabase) skipped for now;
-    # will be populated once embedding generation is implemented.
-    result = await sb.table("memories").insert({
+    data: dict = {
         "client_key": client_key.lower().strip(),
         "topic":      topic.lower().strip(),
         "content":    content.strip(),
         "source":     source,
-    }).execute()
+    }
+    # embedding arrives as raw bytes (struct.pack of floats) from SQLite callers,
+    # but memory_service._save_with_embedding inserts directly with list[float].
+    # Only convert if bytes were passed here (legacy path).
+    if isinstance(embedding, (bytes, bytearray)) and len(embedding) > 0:
+        import struct
+        n = len(embedding) // 4
+        data["embedding"] = list(struct.unpack(f"{n}f", embedding))
+    result = await sb.table("memories").insert(data).execute()
     return result.data[0]["id"] if result.data else 0
 
 

@@ -29,6 +29,7 @@ from .agent import run_agent
 from .models.database import init_db, save_oauth_token, reprocess_raw_payloads
 from .prompts import SYSTEM_PROMPT
 from .services.conversation import ConversationMemory
+from .services.memory_service import build_memory_context, auto_extract_memories
 from .services.report_service import (
     is_report_request, generate_report, extract_hours_back, extract_client,
 )
@@ -86,9 +87,6 @@ async def _process_message(event: dict, say, client) -> None:
 
             ws = await _get_workspaces()
 
-            # Supplement WORKSPACES_JSON with internal Slack channel names so that
-            # clients without an external workspace (e.g. "ativa") still appear.
-            # We skip generic/internal channels that are not client names.
             _SKIP = {
                 "geral", "general", "random", "aleatorio", "equipe", "time", "team",
                 "dev", "developers", "bot-alertas", "bot-testes", "bot-logs",
@@ -105,9 +103,7 @@ async def _process_message(event: dict, say, client) -> None:
             except Exception:
                 _ch_names = []
 
-            # Preserve WORKSPACES_JSON order, append any channel-only clients at end
             all_clients = list(dict.fromkeys(list(ws.keys()) + _ch_names))
-            # CLIENT_LIST env var can further extend the list if needed
             _extra = [c.strip() for c in os.getenv("CLIENT_LIST", "").split(",") if c.strip()]
             all_clients = list(dict.fromkeys(all_clients + _extra))
 
@@ -117,10 +113,30 @@ async def _process_message(event: dict, say, client) -> None:
 
             response = await generate_report(clients, hours_back=hours_back)
         else:
+            # ── Layer 2: Proactive memory injection ──────────────────────────
+            # Retrieve relevant memories BEFORE the agent call and inject them
+            # into the system prompt so the agent already "knows" without needing
+            # to call memory_recall as a tool for basic context.
+            try:
+                from .tools.slack_tools import _get_workspaces
+                _ws = await _get_workspaces()
+                memory_context = await build_memory_context(user_message, list(_ws.keys()))
+            except Exception:
+                memory_context = ""
+
+            enriched_prompt = SYSTEM_PROMPT
+            if memory_context:
+                enriched_prompt = (
+                    SYSTEM_PROMPT
+                    + "\n\n---\n## CONTEXTO DE MEMÓRIA (injetado automaticamente)\n"
+                    + memory_context
+                    + "\n---\n"
+                )
+
             response = await run_agent(
                 user_message=user_message,
                 history=history,
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=enriched_prompt,
                 context={"user_id": user_id},
             )
 
@@ -128,6 +144,11 @@ async def _process_message(event: dict, say, client) -> None:
         await memory.add_message(channel, thread_ts, "assistant", response)
 
         await say(text=response, thread_ts=thread_ts)
+
+        # ── Layer 3: Auto-extraction (background, non-blocking) ───────────
+        # After the response is sent, analyse the exchange and auto-save any
+        # new facts. Runs as a fire-and-forget task — never delays the user.
+        asyncio.create_task(auto_extract_memories(user_message, response))
 
     except Exception as exc:
         logger.error("Agent error: %s", exc, exc_info=True)
