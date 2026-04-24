@@ -126,7 +126,7 @@ async def _fetch_external_slack(client_key: str, hours_back: int) -> str:
         return f"⚠️ERRO ao ler workspace externo: {exc}"
 
 
-async def _fetch_readai(client_key: str, hours_back: int) -> str:
+async def _fetch_readai(client_key: str, hours_back: int, description: str = "") -> str:
     try:
         import datetime as _dt
         import re as _re
@@ -140,24 +140,41 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
         limit = max(20, min(100, hours_back // 2))
 
         key_lower = client_key.lower()
-        # Word-boundary pattern so "ativa" doesn't match "ativação" / "está ativa"
-        # and generic Portuguese words inside summaries don't bleed into other clients.
+        desc_lower = description.lower().strip()
+        # Meaningful words from description (len > 2 avoids noise like "de", "do")
+        desc_words = [w for w in desc_lower.split() if len(w) > 2] if desc_lower else []
+
+        # Word-boundary pattern for key ("grupozelo" → \bgrupozelo\b)
         key_pattern = _re.compile(r'\b' + _re.escape(key_lower) + r'\b')
 
         def _matches(row: dict) -> bool:
-            """True if client_key appears as a whole word in title, participants, summary, or action_items."""
-            return bool(
-                key_pattern.search((row.get("title") or "").lower())
-                or key_pattern.search((row.get("participants") or "").lower())
-                or key_pattern.search((row.get("summary") or "").lower())
-                or key_pattern.search((row.get("action_items") or "").lower())
+            """True if key (word-boundary) OR all description words appear in the meeting fields."""
+            fields = [
+                (row.get("title") or "").lower(),
+                (row.get("participants") or "").lower(),
+                (row.get("summary") or "").lower(),
+                (row.get("action_items") or "").lower(),
+            ]
+            combined = " ".join(fields)
+            return (
+                any(key_pattern.search(f) for f in fields)
+                or (bool(desc_words) and all(w in combined for w in desc_words))
             )
 
-        # Primary: DB keyword search (broad LIKE) then refine with word-boundary check
-        rows = await search_meetings(client_key, limit=limit, since_iso=since_iso)
+        # Primary search by client key
+        rows = await search_meetings(key_lower, limit=limit, since_iso=since_iso)
         rows = [r for r in rows if _matches(r)]
 
-        # Fallback: scan all meetings in window and apply the same word-boundary filter
+        # Secondary search by description (catches "Grupo Zelo" when key is "grupozelo")
+        if desc_lower and desc_lower != key_lower:
+            desc_rows = await search_meetings(desc_lower, limit=limit, since_iso=since_iso)
+            seen = {r["meeting_id"] for r in rows}
+            for r in desc_rows:
+                if r["meeting_id"] not in seen and _matches(r):
+                    rows.append(r)
+                    seen.add(r["meeting_id"])
+
+        # Fallback: scan all meetings in window and apply the same filter
         if not rows:
             all_rows = await get_meetings_in_window(since_iso, limit=limit)
             rows = [r for r in all_rows if _matches(r)]
@@ -402,11 +419,11 @@ async def _fetch_commitments(client_key: str) -> str:
 # Per-client parallel fetch
 # ---------------------------------------------------------------------------
 
-async def fetch_client_data(client_key: str, hours_back: int) -> dict:
+async def fetch_client_data(client_key: str, hours_back: int, description: str = "") -> dict:
     """Fetch per-client data sources concurrently (internal Slack is fetched globally)."""
     external, readai, hubspot, memories, commitments = await asyncio.gather(
         _fetch_external_slack(client_key, hours_back),
-        _fetch_readai(client_key, hours_back),
+        _fetch_readai(client_key, hours_back, description=description),
         _fetch_hubspot(client_key),
         _fetch_memories(client_key),
         _fetch_commitments(client_key),
@@ -493,11 +510,17 @@ async def generate_report(
     t0 = time.time()
     logger.info("Generating report for %d clients, %dh window", len(client_keys), hours_back)
 
+    # Resolve workspace descriptions to improve Read.ai matching
+    # (key "grupozelo" → description "Grupo Zelo" → finds "[Grupo Zelo - TH] Meeting")
+    from ..tools.slack_tools import _get_workspaces
+    ws_map = await _get_workspaces()
+
     # Fetch internal Slack ONCE for all clients (parallel channel scan)
     # and per-client data concurrently
     internal_slack_task = asyncio.create_task(_fetch_all_internal_slack(hours_back))
     client_data_list_task = asyncio.gather(
-        *[fetch_client_data(key, hours_back) for key in client_keys],
+        *[fetch_client_data(key, hours_back, description=ws_map.get(key, {}).get("description", ""))
+          for key in client_keys],
         return_exceptions=True,
     )
     internal_slack_all, client_data_list = await asyncio.gather(
