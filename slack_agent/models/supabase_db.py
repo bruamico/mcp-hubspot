@@ -231,13 +231,19 @@ async def get_meetings_in_window(
     since_iso: str, until_iso: str | None = None, limit: int = 50
 ) -> list[dict]:
     sb = await _sb()
+    since = since_iso[:10]
+    # Include rows where meeting_date is NULL (fall back to created_at for those)
+    date_filter = f"meeting_date.gte.{since},and(meeting_date.is.null,created_at.gte.{since})"
     builder = sb.table("meetings").select(
         "meeting_id,title,meeting_date,duration_seconds,participants,"
         "summary,action_items,key_questions,topics,recording_url,created_at"
-    ).gte("meeting_date", since_iso[:10])
+    ).or_(date_filter)
     if until_iso:
-        builder = builder.lte("meeting_date", until_iso[:10])
-    result = await builder.order("meeting_date", desc=True).limit(limit).execute()
+        until = until_iso[:10]
+        builder = builder.or_(
+            f"meeting_date.lte.{until},and(meeting_date.is.null,created_at.lte.{until})"
+        )
+    result = await builder.order("meeting_date", desc=True, nullsfirst=False).limit(limit).execute()
     return [_meeting_row(r) for r in (result.data or [])]
 
 
