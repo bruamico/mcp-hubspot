@@ -145,11 +145,12 @@ async def _fetch_readai(client_key: str, hours_back: int) -> str:
         key_pattern = _re.compile(r'\b' + _re.escape(key_lower) + r'\b')
 
         def _matches(row: dict) -> bool:
-            """True if client_key appears as a whole word in title, participants, or summary."""
+            """True if client_key appears as a whole word in title, participants, summary, or action_items."""
             return bool(
                 key_pattern.search((row.get("title") or "").lower())
                 or key_pattern.search((row.get("participants") or "").lower())
-                or key_pattern.search((row.get("summary") or "").lower()[:400])
+                or key_pattern.search((row.get("summary") or "").lower())
+                or key_pattern.search((row.get("action_items") or "").lower())
             )
 
         # Primary: DB keyword search (broad LIKE) then refine with word-boundary check
